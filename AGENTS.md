@@ -14,6 +14,7 @@ Before making changes, read [`README.md`](./README.md) and [`UPSTREAM.md`](./UPS
 - Put EvoStudio robot and teleoperator implementations in isolated LeRobot extension namespaces rather than scattering embodiment checks through rollout code.
 - Treat `src/lerobot/` as upstream-owned. Modify it only for a generic fix or Hook that cannot be implemented through an existing public extension point.
 - `src/lerobot/` must not depend on EvoStudio Cloud/Web APIs or embodiment-specific business objects.
+- Git LFS is disabled for this fork. Do not add LFS rules or objects. Remove LFS-managed test artifacts introduced by upstream upgrades while preserving upstream commit ancestry.
 
 ## Core Modification Rules
 

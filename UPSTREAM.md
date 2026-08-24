@@ -12,6 +12,12 @@
 | 基线确认日期 | `2026-08-24`                                 |
 | Python 要求  | `>=3.12`                                     |
 
+## Git LFS 策略
+
+EvoStudio Runtime 不使用 Git LFS。极狐Lab项目已关闭 LFS，当前主线删除官方 `tests/artifacts/` 中的 LFS 测试资源，并移除 `.gitattributes` 中的 LFS 规则。
+
+为了保持与 LeRobot 官方 Tag 的共同祖先，历史提交中的 pointer 文本不做全历史重写，但对应 LFS 实体不上传到极狐Lab。升级合并新的官方 Tag 后，必须在同一升级分支删除新引入的 LFS 文件和规则。依赖这些资源的上游测试不能作为本仓库默认检查；确有需要时应从官方或专用测试存储临时下载。
+
 ## Remote 约定
 
 ```text
@@ -87,6 +93,7 @@ git diff --stat <new-tag>
 - 更新本文件中的 Tag、提交、日期、Python 要求和核心差异表。
 - 更新 README 中的当前基线和版本链接。
 - 检查安装器涉及的系统依赖、ROS、CUDA、FFmpeg、相机和机器人 SDK 是否变化。
+- 删除新版本重新带入的 LFS 文件和 `.gitattributes` LFS 规则，不得上传 LFS 对象。
 
 ### 6. 分级验证
 
