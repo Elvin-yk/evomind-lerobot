@@ -1,3 +1,59 @@
+# EvoStudio Runtime Agent Guide
+
+This repository is a thin, updateable fork of Hugging Face LeRobot. The EvoStudio-specific rules in this section take precedence over the inherited LeRobot guidance below.
+
+## Required Context
+
+Before making changes, read [`README.md`](./README.md) and [`UPSTREAM.md`](./UPSTREAM.md). Preserve the current upstream base and inspect existing implementations before adding code.
+
+## Repository Boundaries
+
+- `origin` (JiHuLab) is the only push target. `upstream` (GitHub) is read-only. Never push to GitHub or trigger GitHub Actions.
+- Keep a single repository. Do not introduce another Engine repository, a LeRobot source submodule, vendored ROS source, or a dependency redirect to a sibling checkout.
+- Put Studio protocol, supervision, events, installation integration, and other product logic under `src/evostudio_runtime/`.
+- Put EvoStudio robot and teleoperator implementations in isolated LeRobot extension namespaces rather than scattering embodiment checks through rollout code.
+- Treat `src/lerobot/` as upstream-owned. Modify it only for a generic fix or Hook that cannot be implemented through an existing public extension point.
+- `src/lerobot/` must not depend on EvoStudio Cloud/Web APIs or embodiment-specific business objects.
+
+## Core Modification Rules
+
+Any change under `src/lerobot/` must:
+
+1. Preserve official behavior when the new Hook is not configured.
+2. Use generic LeRobot terminology rather than EvoStudio-specific names.
+3. Be isolated in a reviewable commit without unrelated product changes or formatting churn.
+4. Be recorded in the core-difference table in `UPSTREAM.md`.
+5. Prefer a patch that could reasonably be contributed upstream.
+
+Before handoff, compare the fork against the recorded upstream Tag:
+
+```bash
+git diff v0.6.1 -- src/lerobot
+```
+
+Update the Tag in this command when `UPSTREAM.md` changes. Any unrecorded core difference is a release blocker.
+
+## Runtime Rules
+
+- Use native LeRobot Dataset, rollout, policy, robot, teleoperation, and logging behavior whenever it exists; do not reimplement it in EvoStudio.
+- Emit Studio state through a structured event interface. Never parse stdout/stderr as a state protocol.
+- LeRobot Runtime is the sole hardware owner while an operation is active. A supervisor may control the process but must not open the same robot or camera.
+- Keep the official Dataset schema by default. Schema extensions require an explicit product requirement and compatibility review.
+- Do not add compatibility shims, deprecated wrappers, silent fallbacks, or broad exception swallowing. Fix the current source of truth.
+- Keep the existing production `evostudio-client` untouched until the new Runtime passes migration and real-hardware acceptance.
+
+## Upstream And Validation Policy
+
+- Follow stable LeRobot Tags through explicit upgrade branches; do not continuously merge arbitrary `upstream/main` commits.
+- Do not configure daily or weekly compatibility CI. Run checks only for deliberate upgrades and releases.
+- Reuse existing LeRobot tests first. Do not add tests speculatively during repository initialization.
+- Hardware-facing releases require real-device validation for every embodiment claimed as supported.
+- Do not mix an upstream merge with new EvoStudio feature work in the same commit.
+
+## Inherited LeRobot Guidance
+
+The remainder of this file is the guidance inherited from the current LeRobot baseline and still applies unless it conflicts with the EvoStudio rules above.
+
 This file provides guidance to AI agents when working with code in this repository.
 
 > **User-facing help → [`AGENT_GUIDE.md`](./AGENT_GUIDE.md)** (SO-101 setup, recording, picking a policy, training duration, eval — with copy-pasteable commands).
