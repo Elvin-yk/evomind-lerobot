@@ -107,7 +107,7 @@ uv run pytest <受影响的现有测试>
 
 然后进行 Runtime 兼容验证：
 
-- Studio 任务能够启动、停止并报告失败。
+- CLI 或 Python API 能够启动、停止运行并报告失败。
 - 官方 teleoperate、record 和所使用的 rollout strategy 行为正常。
 - 结构化事件顺序完整，重连后能够恢复状态快照。
 - LeRobotDataset 可以保存、读取和上传，数据结构与官方兼容。

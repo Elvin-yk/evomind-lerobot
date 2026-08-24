@@ -10,10 +10,11 @@ Before making changes, read [`README.md`](./README.md) and [`UPSTREAM.md`](./UPS
 
 - `origin` (JiHuLab) is the only push target. `upstream` (GitHub) is read-only. Never push to GitHub or trigger GitHub Actions.
 - Keep a single repository. Do not introduce another Engine repository, a LeRobot source submodule, vendored ROS source, or a dependency redirect to a sibling checkout.
-- Put Studio protocol, supervision, events, installation integration, and other product logic under `src/evostudio_runtime/`.
+- Put local CLI, process lifecycle, generic events, installation integration, and other Runtime logic under `src/evostudio_runtime/`.
 - Put EvoStudio robot and teleoperator implementations in isolated LeRobot extension namespaces rather than scattering embodiment checks through rollout code.
 - Treat `src/lerobot/` as upstream-owned. Modify it only for a generic fix or Hook that cannot be implemented through an existing public extension point.
-- `src/lerobot/` must not depend on EvoStudio Cloud/Web APIs or embodiment-specific business objects.
+- `src/lerobot/` must not depend on Cloud/Web APIs, external task systems, or embodiment-specific business objects.
+- Keep this repository independent. Do not add it to an umbrella repository or introduce dependencies on EvoStudio Cloud, Web, Client, or their release processes.
 - Git LFS is disabled for this fork. Do not add LFS rules or objects. Remove LFS-managed test artifacts introduced by upstream upgrades while preserving upstream commit ancestry.
 
 ## Core Modification Rules
@@ -37,11 +38,10 @@ Update the Tag in this command when `UPSTREAM.md` changes. Any unrecorded core d
 ## Runtime Rules
 
 - Use native LeRobot Dataset, rollout, policy, robot, teleoperation, and logging behavior whenever it exists; do not reimplement it in EvoStudio.
-- Emit Studio state through a structured event interface. Never parse stdout/stderr as a state protocol.
+- Emit runtime state through a generic structured event interface. Never parse stdout/stderr as a state protocol.
 - LeRobot Runtime is the sole hardware owner while an operation is active. A supervisor may control the process but must not open the same robot or camera.
 - Keep the official Dataset schema by default. Schema extensions require an explicit product requirement and compatibility review.
 - Do not add compatibility shims, deprecated wrappers, silent fallbacks, or broad exception swallowing. Fix the current source of truth.
-- Keep the existing production `evostudio-client` untouched until the new Runtime passes migration and real-hardware acceptance.
 
 ## Upstream And Validation Policy
 
