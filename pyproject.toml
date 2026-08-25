@@ -135,6 +135,10 @@ core_scripts = ["lerobot[dataset]", "lerobot[hardware]", "lerobot[viz]"]
 evaluation = ["lerobot[av-dep]"]
 # lerobot-dataset-viz, lerobot-imgtransform-viz
 dataset_viz = ["lerobot[dataset]", "lerobot[viz]"]
+console = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.34.0,<1.0.0",
+]
 
 # Common
 av-dep = ["av>=15.0.0,<16.0.0"]
@@ -357,6 +361,7 @@ lerobot-edit-dataset="lerobot.scripts.lerobot_edit_dataset:main"
 lerobot-setup-can="lerobot.scripts.lerobot_setup_can:main"
 lerobot-annotate="lerobot.scripts.lerobot_annotate:main"
 lerobot-rollout="lerobot.scripts.lerobot_rollout:main"
+evomind-lerobot-serve="evomind_lerobot.cli:main"
 
 # ---------------- Tool Configurations ----------------
 

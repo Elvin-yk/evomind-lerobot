@@ -193,6 +193,7 @@ from lerobot.teleoperators import (  # noqa: F401
 )
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.process import ProcessSignalHandler
+from lerobot.utils.runtime_bridge import emit_runtime_event
 from lerobot.utils.utils import init_logging
 from lerobot.utils.visualization_utils import init_visualization, shutdown_visualization
 
@@ -203,6 +204,12 @@ logger = logging.getLogger(__name__)
 def rollout(cfg: RolloutConfig):
     """Main entry point for policy deployment."""
     init_logging()
+    emit_runtime_event(
+        "rollout",
+        "starting",
+        robot_type=cfg.robot.type if cfg.robot is not None else None,
+        strategy=cfg.strategy.type,
+    )
 
     if cfg.display_data:
         logger.info(
@@ -217,6 +224,7 @@ def rollout(cfg: RolloutConfig):
     shutdown_event = signal_handler.shutdown_event
 
     logger.info("Building rollout context...")
+    emit_runtime_event("rollout", "connecting", strategy=cfg.strategy.type)
     ctx = build_rollout_context(cfg, shutdown_event)
 
     strategy = create_strategy(cfg.strategy)
@@ -231,15 +239,24 @@ def rollout(cfg: RolloutConfig):
     try:
         strategy.setup(ctx)
         logger.info("Rollout setup complete, starting rollout...")
+        emit_runtime_event(
+            "rollout",
+            "running",
+            strategy=cfg.strategy.type,
+            control_source="policy",
+            records_data=cfg.dataset is not None,
+        )
         strategy.run(ctx)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
+        emit_runtime_event("rollout", "stopping", strategy=cfg.strategy.type)
         strategy.teardown(ctx)
         if cfg.display_data:
             shutdown_visualization(cfg.display_mode)
 
     logger.info("Rollout finished")
+    emit_runtime_event("rollout", "completed", strategy=cfg.strategy.type)
 
 
 def main():

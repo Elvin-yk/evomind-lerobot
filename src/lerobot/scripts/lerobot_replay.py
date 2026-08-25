@@ -73,6 +73,7 @@ from lerobot.robots import (  # noqa: F401
 from lerobot.utils.constants import ACTION
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import emit_runtime_event, take_runtime_commands
 from lerobot.utils.utils import (
     init_logging,
     log_say,
@@ -103,6 +104,13 @@ class ReplayConfig:
 def replay(cfg: ReplayConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
+    emit_runtime_event(
+        "replay",
+        "starting",
+        robot_type=cfg.robot.type,
+        repo_id=cfg.dataset.repo_id,
+        episode=cfg.dataset.episode,
+    )
 
     robot_action_processor = make_default_robot_action_processor()
 
@@ -111,11 +119,16 @@ def replay(cfg: ReplayConfig):
 
     actions = dataset.select_columns(ACTION)
 
+    emit_runtime_event("replay", "connecting")
     robot.connect()
 
     try:
         log_say("Replaying episode", cfg.play_sounds, blocking=True)
+        emit_runtime_event("replay", "running", frame=0, total_frames=dataset.num_frames)
+        last_status_t = time.perf_counter()
         for idx in range(dataset.num_frames):
+            if "stop" in take_runtime_commands():
+                break
             start_episode_t = time.perf_counter()
 
             action_array = actions[idx][ACTION]
@@ -131,8 +144,14 @@ def replay(cfg: ReplayConfig):
 
             dt_s = time.perf_counter() - start_episode_t
             precise_sleep(max(1 / dataset.fps - dt_s, 0.0))
+            now = time.perf_counter()
+            if now - last_status_t >= 0.5:
+                emit_runtime_event("replay", "running", frame=idx + 1, total_frames=dataset.num_frames)
+                last_status_t = now
     finally:
+        emit_runtime_event("replay", "stopping")
         robot.disconnect()
+    emit_runtime_event("replay", "completed", total_frames=dataset.num_frames)
 
 
 def main():

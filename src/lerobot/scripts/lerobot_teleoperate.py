@@ -123,6 +123,7 @@ from lerobot.teleoperators import (  # noqa: F401
 )
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import emit_runtime_event, take_runtime_commands
 from lerobot.utils.utils import init_logging, move_cursor_up
 from lerobot.utils.visualization_utils import (
     init_visualization,
@@ -185,6 +186,7 @@ def teleop_loop(
 
     display_len = max(len(key) for key in robot.action_features)
     start = time.perf_counter()
+    last_status_t = start
     while True:
         loop_start = time.perf_counter()
 
@@ -233,7 +235,21 @@ def teleop_loop(
         print(f"Teleop loop time: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
         move_cursor_up(1)
 
-        if duration is not None and time.perf_counter() - start >= duration:
+        now = time.perf_counter()
+        if now - last_status_t >= 0.5:
+            emit_runtime_event(
+                "teleoperation",
+                "running",
+                elapsed_s=now - start,
+                fps=1 / loop_s,
+                control_source="teleoperation",
+            )
+            last_status_t = now
+
+        if "stop" in take_runtime_commands():
+            return
+
+        if duration is not None and now - start >= duration:
             return
 
 
@@ -241,6 +257,12 @@ def teleop_loop(
 def teleoperate(cfg: TeleoperateConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
+    emit_runtime_event(
+        "teleoperation",
+        "starting",
+        robot_type=cfg.robot.type,
+        teleoperator_type=cfg.teleop.type,
+    )
     if cfg.display_data:
         init_visualization(
             cfg.display_mode, session_name="teleoperation", ip=cfg.display_ip, port=cfg.display_port
@@ -255,10 +277,12 @@ def teleoperate(cfg: TeleoperateConfig):
     robot = make_robot_from_config(cfg.robot)
     teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
 
+    emit_runtime_event("teleoperation", "connecting")
     teleop.connect()
     robot.connect()
 
     try:
+        emit_runtime_event("teleoperation", "running", control_source="teleoperation")
         teleop_loop(
             teleop=teleop,
             robot=robot,
@@ -274,10 +298,12 @@ def teleoperate(cfg: TeleoperateConfig):
     except KeyboardInterrupt:
         pass
     finally:
+        emit_runtime_event("teleoperation", "stopping")
         if cfg.display_data:
             shutdown_visualization(cfg.display_mode)
         teleop.disconnect()
         robot.disconnect()
+    emit_runtime_event("teleoperation", "completed")
 
 
 def main():

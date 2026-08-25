@@ -68,6 +68,7 @@ from lerobot.teleoperators import (  # noqa: F401
     unitree_g1,
 )
 from lerobot.utils.import_utils import register_third_party_plugins
+from lerobot.utils.runtime_bridge import emit_runtime_event
 from lerobot.utils.utils import init_logging
 
 
@@ -87,18 +88,24 @@ class CalibrateConfig:
 def calibrate(cfg: CalibrateConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
+    device_type = cfg.device.type
+    emit_runtime_event("calibration", "starting", device_type=device_type)
 
     if isinstance(cfg.device, RobotConfig):
         device = make_robot_from_config(cfg.device)
     elif isinstance(cfg.device, TeleoperatorConfig):
         device = make_teleoperator_from_config(cfg.device)
 
+    emit_runtime_event("calibration", "connecting", device_type=device_type)
     device.connect(calibrate=False)
 
     try:
+        emit_runtime_event("calibration", "running", device_type=device_type)
         device.calibrate()
     finally:
+        emit_runtime_event("calibration", "stopping", device_type=device_type)
         device.disconnect()
+    emit_runtime_event("calibration", "completed", device_type=device_type)
 
 
 def main():

@@ -156,6 +156,7 @@ from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dic
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.keyboard_input import init_keyboard_listener
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import emit_runtime_event, take_runtime_commands
 from lerobot.utils.utils import (
     init_logging,
     log_say,
@@ -279,8 +280,19 @@ def record_loop(
     no_action_count = 0
     timestamp = 0
     start_episode_t = time.perf_counter()
+    last_status_t = start_episode_t
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
+
+        commands = take_runtime_commands()
+        if "stop" in commands:
+            events["stop_recording"] = True
+            events["exit_early"] = True
+        elif "rerecord_episode" in commands:
+            events["rerecord_episode"] = True
+            events["exit_early"] = True
+        elif "finish_episode" in commands:
+            events["exit_early"] = True
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -355,7 +367,17 @@ def record_loop(
 
         precise_sleep(max(sleep_time_s, 0.0))
 
-        timestamp = time.perf_counter() - start_episode_t
+        now = time.perf_counter()
+        timestamp = now - start_episode_t
+        if now - last_status_t >= 0.5:
+            emit_runtime_event(
+                "recording",
+                "running" if dataset is not None else "resetting",
+                elapsed_s=timestamp,
+                fps=1 / max(time.perf_counter() - start_loop_t, 1e-9),
+                control_source="teleoperation",
+            )
+            last_status_t = now
 
 
 @parser.wrap()
@@ -367,6 +389,13 @@ def record(
 ) -> LeRobotDataset:
     init_logging()
     logging.info(pformat(asdict(cfg)))
+    emit_runtime_event(
+        "recording",
+        "starting",
+        robot_type=cfg.robot.type,
+        teleoperator_type=cfg.teleop.type if cfg.teleop is not None else None,
+        repo_id=cfg.dataset.repo_id,
+    )
     if cfg.display_data:
         init_visualization(
             cfg.display_mode, session_name="recording", ip=cfg.display_ip, port=cfg.display_port
@@ -456,7 +485,9 @@ def record(
         # Connect the teleoperator before the robot so the robot isn't left idle (and possibly
         # tripping a firmware watchdog) during teleop init. Matches lerobot_teleoperate.py.
         if teleop is not None:
+            emit_runtime_event("recording", "connecting", device="teleoperator")
             teleop.connect()
+        emit_runtime_event("recording", "connecting", device="robot")
         robot.connect()
 
         listener, events = init_keyboard_listener()
@@ -470,6 +501,14 @@ def record(
             recorded_episodes = 0
             while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
                 log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
+                emit_runtime_event(
+                    "recording",
+                    "running",
+                    stage="episode",
+                    episode=dataset.num_episodes,
+                    target_episodes=cfg.dataset.num_episodes,
+                    control_source="teleoperation",
+                )
                 record_loop(
                     robot=robot,
                     events=events,
@@ -492,6 +531,12 @@ def record(
                     (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
                 ):
                     log_say("Reset the environment", cfg.play_sounds)
+                    emit_runtime_event(
+                        "recording",
+                        "resetting",
+                        episode=dataset.num_episodes,
+                        control_source="teleoperation",
+                    )
 
                     record_loop(
                         robot=robot,
@@ -514,9 +559,18 @@ def record(
                     dataset.clear_episode_buffer()
                     continue
 
+                emit_runtime_event("recording", "saving", episode=dataset.num_episodes)
                 dataset.save_episode()
                 recorded_episodes += 1
+                emit_runtime_event(
+                    "recording",
+                    "running",
+                    stage="episode_saved",
+                    saved_episodes=recorded_episodes,
+                    target_episodes=cfg.dataset.num_episodes,
+                )
     finally:
+        emit_runtime_event("recording", "stopping")
         log_say("Stop recording", cfg.play_sounds, blocking=True)
 
         if dataset:
@@ -540,6 +594,12 @@ def record(
                 logging.warning("No episodes saved — skipping push to hub")
 
         log_say("Exiting", cfg.play_sounds)
+    emit_runtime_event(
+        "recording",
+        "completed",
+        repo_id=cfg.dataset.repo_id,
+        episodes=dataset.num_episodes if dataset is not None else 0,
+    )
     return dataset
 
 

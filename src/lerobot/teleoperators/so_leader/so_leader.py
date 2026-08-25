@@ -23,6 +23,7 @@ from lerobot.motors.feetech import (
     OperatingMode,
 )
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
+from lerobot.utils.runtime_bridge import runtime_prompt
 
 from ..teleoperator import Teleoperator
 from .config_so_leader import SOLeaderTeleopConfig
@@ -84,7 +85,8 @@ class SOLeader(Teleoperator):
     def calibrate(self) -> None:
         if self.calibration:
             # Calibration file exists, ask user whether to use it or run new calibration
-            user_input = input(
+            user_input = runtime_prompt(
+                "calibration_mismatch",
                 f"Press ENTER to use provided calibration file associated with the id {self.id}, or type 'c' and press ENTER to run calibration: "
             )
             if user_input.strip().lower() != "c":
@@ -97,7 +99,10 @@ class SOLeader(Teleoperator):
         for motor in self.bus.motors:
             self.bus.write("Operating_Mode", motor, OperatingMode.POSITION.value)
 
-        input(f"Move {self} to the middle of its range of motion and press ENTER....")
+        runtime_prompt(
+            "calibration_middle",
+            f"Move {self} to the middle of its range of motion and press ENTER....",
+        )
         homing_offsets = self.bus.set_half_turn_homings()
 
         full_turn_motor = "wrist_roll"
@@ -138,7 +143,10 @@ class SOLeader(Teleoperator):
 
     def setup_motors(self) -> None:
         for motor in reversed(self.bus.motors):
-            input(f"Connect the controller board to the '{motor}' motor only and press enter.")
+            runtime_prompt(
+                "configure_motor",
+                f"Connect the controller board to the '{motor}' motor only and press enter.",
+            )
             self.bus.setup_motor(motor)
             print(f"'{motor}' motor id set to {self.bus.motors[motor].id}")
 

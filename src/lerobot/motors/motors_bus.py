@@ -47,6 +47,11 @@ else:
     DeepDiff = None  # type: ignore[assignment, misc]
 
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
+from lerobot.utils.runtime_bridge import (
+    emit_runtime_event,
+    runtime_bridge_active,
+    take_runtime_commands,
+)
 from lerobot.utils.utils import enter_pressed, move_cursor_up
 
 type NameOrID = str | int
@@ -824,6 +829,7 @@ class SerialMotorsBus(MotorsBusBase):
         maxes = start_positions.copy()
 
         user_pressed_enter = False
+        emit_runtime_event("calibration", "recording_ranges", motors=motor_names)
         while not user_pressed_enter:
             positions = self.sync_read("Present_Position", motor_names, normalize=False, num_retry=5)
             mins = {motor: min(positions[motor], min_) for motor, min_ in mins.items()}
@@ -835,7 +841,12 @@ class SerialMotorsBus(MotorsBusBase):
                 for motor in motor_names:
                     print(f"{motor:<15} | {mins[motor]:>6} | {positions[motor]:>6} | {maxes[motor]:>6}")
 
-            if enter_pressed():
+            if runtime_bridge_active():
+                commands = take_runtime_commands()
+                if "stop" in commands:
+                    raise RuntimeError("Stopped by user.")
+                user_pressed_enter = "finish_calibration_range" in commands
+            elif enter_pressed():
                 user_pressed_enter = True
 
             if not user_pressed_enter:
@@ -849,6 +860,7 @@ class SerialMotorsBus(MotorsBusBase):
         if same_min_max:
             raise ValueError(f"Some motors have the same min and max values:\n{pformat(same_min_max)}")
 
+        emit_runtime_event("calibration", "ranges_recorded", motors=motor_names)
         return mins, maxes
 
     def _normalize(self, ids_values: dict[int, int]) -> dict[int, float]:
