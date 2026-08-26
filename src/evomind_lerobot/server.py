@@ -159,11 +159,24 @@ def create_app():
         inventory = hardware_inventory()
         serial_devices = {device["id"]: device for device in inventory["serial"]}
         camera_devices = {device["id"]: device for device in inventory["cameras"]}
+        current_configuration = load_device_configuration()
+        unchanged_serial = {
+            (binding.alias, binding.id, binding.port)
+            for binding in current_configuration.serial_bindings
+        } if current_configuration else set()
+        unchanged_cameras = {
+            (binding.alias, binding.id, binding.port)
+            for binding in current_configuration.camera_bindings
+        } if current_configuration else set()
         for binding in configuration.serial_bindings:
+            if (binding.alias, binding.id, binding.port) in unchanged_serial:
+                continue
             device = serial_devices.get(binding.id)
             if device is None or binding.port != device["path"]:
                 raise HTTPException(400, f"Serial device is no longer connected: {binding.id}")
         for binding in configuration.camera_bindings:
+            if (binding.alias, binding.id, binding.port) in unchanged_cameras:
+                continue
             device = camera_devices.get(binding.id)
             if device is None or binding.port != device["path"]:
                 raise HTTPException(400, f"Camera is no longer connected: {binding.id}")

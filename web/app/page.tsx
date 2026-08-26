@@ -25,6 +25,7 @@ type CameraPreview = CameraDevice & { preview_data_url: string };
 type HardwareInventory = { serial: SerialDevice[]; cameras: CameraDevice[] };
 type Side = 'single' | 'left' | 'right';
 type SerialKind = 'robot' | 'teleoperator';
+type IdentificationScope = 'hardware' | 'sensors' | 'all';
 type PageId = 'device' | 'maintenance' | 'calibration' | 'teleoperation' | 'recording' | 'inference' | 'replay';
 type SerialBinding = {
   id: string; port: string; alias: string; kind: SerialKind; side: Side;
@@ -147,6 +148,7 @@ export default function Home() {
   const [motionStarting, setMotionStarting] = useState(false);
   const [cameraLoading, setCameraLoading] = useState(false);
   const [identifying, setIdentifying] = useState(false);
+  const [identificationScope, setIdentificationScope] = useState<IdentificationScope>('all');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -242,13 +244,23 @@ export default function Home() {
     finally { setCameraLoading(false); }
   }, []);
 
-  async function beginIdentification() {
-    if (!savedModel || !savedProfile) return;
-    setBusy(true); setError(null); setSerialAssignments({}); setCameraAssignments({}); setMotionPorts([]); setCameraPreviews([]); setIdentifying(true);
+  async function beginIdentification(scope: IdentificationScope = 'all') {
+    if (!saved || !savedModel || !savedProfile) return;
+    const preservedSerialAssignments = Object.fromEntries(saved.serial_bindings.map((binding) => [binding.alias, binding.id]));
+    const preservedCameraAssignments = Object.fromEntries(cameras.flatMap((camera, index) => {
+      const slot = saved.camera_slots[index];
+      const binding = saved.camera_bindings.find((item) => item.alias === slot?.alias);
+      return binding ? [[camera.id, binding.id]] : [];
+    }));
+    setBusy(true); setError(null); setIdentificationScope(scope);
+    setSerialAssignments(scope === 'sensors' ? preservedSerialAssignments : {});
+    setCameraAssignments(scope === 'hardware' ? preservedCameraAssignments : {});
+    setMotionPorts([]); setCameraPreviews([]); setIdentifying(true);
     try {
-      const [nextInventory, previews] = await Promise.all([readJson<HardwareInventory>('/api/devices'), postJson<CameraPreview[]>('/api/identify/cameras')]);
-      setInventory(nextInventory); setCameraPreviews(previews);
-      if (serialSlots(savedProfile).length > 0) await startMotion(savedModel.id, []);
+      const nextInventory = await readJson<HardwareInventory>('/api/devices');
+      setInventory(nextInventory);
+      if (scope !== 'hardware') setCameraPreviews(await postJson<CameraPreview[]>('/api/identify/cameras'));
+      if (scope !== 'sensors' && serialSlots(savedProfile).length > 0) await startMotion(savedModel.id, []);
     } catch (identifyError) { setError(identifyError instanceof Error ? identifyError.message : '设备识别启动失败'); }
     finally { setBusy(false); }
   }
@@ -297,19 +309,19 @@ export default function Home() {
     if (cameras.some((camera) => !cameraAssignments[camera.id])) return setError('请完成摄像头识别');
     setBusy(true);
     try {
-      const serialBindings = pendingSlots.map((slot) => {
+    const serialBindings = identificationScope === 'sensors' ? saved.serial_bindings : pendingSlots.map((slot) => {
         const device = inventory.serial.find((item) => item.id === serialAssignments[slot.id]);
         if (!device) throw new Error(`未找到${slot.label}`);
         return { id: device.id, port: device.path, alias: slot.id, kind: slot.kind, side: slot.side };
       });
-      const cameraBindings = cameras.map((camera, index) => {
+    const cameraBindings = identificationScope === 'hardware' ? saved.camera_bindings : cameras.map((camera, index) => {
         const device = inventory.cameras.find((item) => item.id === cameraAssignments[camera.id]);
         if (!device) throw new Error(`未找到${cameraDisplayLabel(camera, cameras, index, mode)}`);
         const slot = saved.camera_slots[index];
         return { id: device.id, port: device.path, alias: slot.alias, side: slot.side };
       });
       const configuration = await requestJson<DeviceConfiguration>('/api/config', 'PUT', { ...saved, serial_bindings: serialBindings, camera_bindings: cameraBindings });
-      setSaved(configuration); await stopMotion(); setIdentifying(false);
+      setSaved(configuration); await stopMotion(); setIdentifying(false); setIdentificationScope('all');
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : '保存失败'); }
     finally { setBusy(false); }
   }
@@ -340,9 +352,9 @@ export default function Home() {
       <div className="runtime"><i />{!collapsed && <div><strong>{status ? '运行正常' : '正在连接'}</strong><span>LeRobot {status?.lerobot_version ?? '—'}</span></div>}</div>
     </aside>
     <main>
-      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{activePage === 'device' && saved && !editing && <div className="header-actions"><button className="outline" type="button" onClick={() => void beginIdentification()}>重新识别</button><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
+      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <span>⌄</span></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
       {error && <div className="error">{error}</div>}
-      {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={serialSlots(savedProfile)} cameras={cameras} mode={mode} serialAssignments={serialAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
+      {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={serialSlots(savedProfile)} cameras={cameras} mode={mode} showHardware={identificationScope !== 'sensors'} showSensors={identificationScope !== 'hardware'} serialAssignments={serialAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
         <div className="device-setup-steps">{createSteps.map((item, index) => {
           const disabled = item.id === 'model' ? !selectedCategory : item.id === 'hardware' ? !selectedModel : false;
           return <button className={`device-setup-step ${item.id === step ? 'active' : ''}`} type="button" disabled={disabled} onClick={() => setStep(item.id)} key={item.id}><span>{index + 1}</span>{item.label}</button>;
@@ -372,17 +384,17 @@ function HardwareStep({ model, mode, cameras, pendingCameraKind, onModeChange, o
   </div>;
 }
 
-function IdentificationStep({ slots, cameras, mode, serialAssignments, cameraAssignments, cameraPreviews, motionPorts, motionStarting, cameraLoading, busy, onRestartMotion, onRefreshCameras, onCameraSelect, onSave }: { mode: ArmMode; slots: SerialSlot[]; cameras: CameraDraft[]; serialAssignments: Record<string, string>; cameraAssignments: Record<string, string>; cameraPreviews: CameraPreview[]; motionPorts: MotionPort[]; motionStarting: boolean; cameraLoading: boolean; busy: boolean; onRestartMotion: () => void; onRefreshCameras: () => void; onCameraSelect: (cameraId: string, deviceId: string) => void; onSave: () => void }) {
+function IdentificationStep({ slots, cameras, mode, showHardware, showSensors, serialAssignments, cameraAssignments, cameraPreviews, motionPorts, motionStarting, cameraLoading, busy, onRestartMotion, onRefreshCameras, onCameraSelect, onSave }: { mode: ArmMode; slots: SerialSlot[]; cameras: CameraDraft[]; showHardware: boolean; showSensors: boolean; serialAssignments: Record<string, string>; cameraAssignments: Record<string, string>; cameraPreviews: CameraPreview[]; motionPorts: MotionPort[]; motionStarting: boolean; cameraLoading: boolean; busy: boolean; onRestartMotion: () => void; onRefreshCameras: () => void; onCameraSelect: (cameraId: string, deviceId: string) => void; onSave: () => void }) {
   const currentSlot = slots.find((slot) => !serialAssignments[slot.id]);
   const currentCamera = cameras.find((camera) => !cameraAssignments[camera.id]);
   const completed = !currentSlot && !currentCamera;
   const readablePorts = motionPorts.filter((port) => !port.motion_error).length;
   return <div className="identification-layout">
-    {slots.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>机械臂</h3><button className="text-button" type="button" onClick={onRestartMotion}>重新识别</button></div><div className="identify-slots">{slots.map((slot) => {
+    {showHardware && slots.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>本体</h3><button className="text-button" type="button" onClick={onRestartMotion}>重新识别</button></div><div className="identify-slots">{slots.map((slot) => {
       const identified = Boolean(serialAssignments[slot.id]); const active = currentSlot?.id === slot.id;
       return <div className={`identify-slot ${active ? 'active' : ''}`} key={slot.id}><span className={`identify-dot ${identified ? 'complete' : ''}`}>{identified ? <Check size={14} /> : ''}</span><strong>{slot.label}</strong><small>{identified ? `已识别 · ${serialIdentity(serialAssignments[slot.id])}` : active ? motionStarting ? '正在连接' : readablePorts ? '请轻轻移动这只机械臂' : '没有可读取的机械臂' : '等待识别'}</small></div>;
     })}</div></section>}
-    {cameras.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>摄像头</h3><button className="text-button inline-icon" type="button" onClick={onRefreshCameras} disabled={cameraLoading}><RefreshCw size={13} />{cameraLoading ? '读取中' : '重新识别'}</button></div>{currentCamera && <p className="identify-prompt">请选择 <strong>{cameraDisplayLabel(currentCamera, cameras, cameras.indexOf(currentCamera), mode)}</strong> 的画面</p>}<div className="identify-camera-grid">{cameraPreviews.map((camera) => {
+    {showSensors && cameras.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>传感器</h3><button className="text-button inline-icon" type="button" onClick={onRefreshCameras} disabled={cameraLoading}><RefreshCw size={13} />{cameraLoading ? '读取中' : '重新识别'}</button></div>{currentCamera && <p className="identify-prompt">请选择 <strong>{cameraDisplayLabel(currentCamera, cameras, cameras.indexOf(currentCamera), mode)}</strong> 的画面</p>}<div className="identify-camera-grid">{cameraPreviews.map((camera) => {
       const assignedEntry = Object.entries(cameraAssignments).find(([, id]) => id === camera.id); const assignedCamera = cameras.find((item) => item.id === assignedEntry?.[0]); const assignedIndex = assignedCamera ? cameras.indexOf(assignedCamera) : -1;
       return <button className={`identify-camera-card ${assignedCamera ? 'used' : ''}`} type="button" disabled={!currentCamera || Boolean(assignedCamera)} onClick={() => currentCamera && onCameraSelect(currentCamera.id, camera.id)} key={camera.id}><img src={camera.preview_data_url} alt={camera.name} /><span>{assignedCamera ? <><Check size={14} />{cameraDisplayLabel(assignedCamera, cameras, assignedIndex, mode)}</> : '选择此画面'}</span></button>;
     })}</div>{!cameraLoading && cameraPreviews.length === 0 && <p className="empty">未读取到摄像头画面</p>}</section>}
@@ -554,13 +566,28 @@ function bindingTitle(alias: string) {
 }
 
 function DeviceOverview({ configuration, model }: { configuration: DeviceConfiguration; model?: DeviceModelOption }) {
+  const [inventory, setInventory] = useState<HardwareInventory | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => readJson<HardwareInventory>('/api/devices')
+      .then((nextInventory) => { if (!cancelled) setInventory(nextInventory); })
+      .catch(() => { if (!cancelled) setInventory(null); });
+    void refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+
+  const serialIds = new Set(inventory?.serial.map((device) => device.id) ?? []);
+  const cameraIds = new Set(inventory?.cameras.map((device) => device.id) ?? []);
   const bindings = [
-    ...configuration.serial_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: binding.kind === 'robot' ? '机械臂' : '遥操作设备', port: binding.port })),
-    ...configuration.camera_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: '摄像头', port: binding.port })),
+    ...configuration.serial_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: binding.kind === 'robot' ? '机械臂' : '遥操作设备', port: binding.port, online: serialIds.has(binding.id) })),
+    ...configuration.camera_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: '摄像头', port: binding.port, online: cameraIds.has(binding.id) })),
   ];
+  const offlineCount = inventory ? bindings.filter((binding) => !binding.online).length : 0;
   return <section className="device-overview">
-    <div className="overview-hero"><div><span className="status-dot" />已连接</div><h2>{model?.title ?? configuration.profile_id}</h2><p>{configuration.robot_type}{configuration.teleoperator_type ? ` + ${configuration.teleoperator_type}` : ''}</p></div>
-    <div className="data-list"><div className="data-list-head"><span>设备</span><span>类型</span><span>接口</span><span>状态</span></div>{bindings.map((binding) => <div className="data-row" key={`${binding.alias}-${binding.id}`}><strong>{bindingTitle(binding.alias)}</strong><span>{binding.kind}</span><code title={binding.port}>{binding.port}</code><span className="row-status"><i />在线</span></div>)}</div>
+    <div className="overview-hero"><div className={offlineCount ? 'offline-status' : ''}><span className="status-dot" />{inventory ? offlineCount ? `${offlineCount} 个接口未连接` : '全部接口在线' : '正在检查接口'}</div><h2>{model?.title ?? configuration.profile_id}</h2><p>{configuration.robot_type}{configuration.teleoperator_type ? ` + ${configuration.teleoperator_type}` : ''}</p></div>
+    <div className="data-list"><div className="data-list-head"><span>设备</span><span>类型</span><span>接口</span><span>状态</span></div>{bindings.map((binding) => <div className="data-row" key={`${binding.alias}-${binding.id}`}><strong>{bindingTitle(binding.alias)}</strong><span>{binding.kind}</span><code title={binding.port}>{binding.port}</code><span className={`row-status${inventory && !binding.online ? ' offline' : ''}`}><i />{inventory ? binding.online ? '在线' : '未连接' : '检查中'}</span></div>)}</div>
   </section>;
 }
 
@@ -666,7 +693,7 @@ function CalibrationPrototype({ configuration, onConfigurationChange }: { config
 function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspaceRefresh }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; workspace: WorkspaceInventory; runtimeEvent: RuntimeEvent | null; onWorkspaceRefresh: () => void }) {
   const followers = configuration.serial_bindings.filter((binding) => binding.kind === 'robot');
   const content = {
-    teleoperation: { title: '遥操作', operation: 'teleoperation', endpoint: '/api/runtime/teleoperation/start', button: '开始遥操作', note: '启动后将独占机械臂' },
+    teleoperation: { title: '遥操作', operation: 'teleoperation', endpoint: '/api/runtime/teleoperation/start', button: '开始遥操作', note: '' },
     recording: { title: '数据采集', operation: 'recording', endpoint: '/api/runtime/recording/start', button: '开始采集', note: '数据保存到本机 LeRobot 数据目录' },
     inference: { title: '推理', operation: 'rollout', endpoint: '/api/runtime/rollout/start', button: '开始推理', note: 'Policy 将直接控制机械臂' },
     replay: { title: '回放', operation: 'replay', endpoint: '/api/runtime/replay/start', button: '开始回放', note: '回放会直接驱动机械臂执行记录动作' },
@@ -729,15 +756,14 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspac
     || (kind === 'inference' && Boolean(effectivePolicyPath && datasetName.trim() && task.trim()))
     || (kind === 'replay' && Boolean(selectedDataset));
 
-  return <section className="workflow-page">
-    {visibleError && <div className="error compact">{visibleError}</div>}
+  return <section className={`workflow-page${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}`}>
     <div className="workflow-grid"><div className="workflow-primary">
       {kind === 'teleoperation' && <WorkflowSection title="控制设置"><div className="form-grid"><label className="full-field">控制频率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label></div></WorkflowSection>}
       {kind === 'recording' && <><WorkflowSection title="数据集"><div className="form-grid"><label className="full-field">数据集名称<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} placeholder="输入数据集名称" /></label><label className="full-field">任务描述<textarea value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="描述本次采集任务" /></label></div></WorkflowSection><WorkflowSection title="采集设置"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection></>}
       {kind === 'inference' && <><WorkflowSection title="策略"><div className="form-grid"><label className="full-field">Policy<input list="local-policies" value={effectivePolicyPath} onChange={(item) => setPolicyPath(item.target.value)} disabled={runningThis} placeholder="本地路径或 Hugging Face repo id" /><datalist id="local-policies">{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id}</option>)}</datalist></label><label>Rollout 策略<select value={strategy} onChange={(item) => setStrategy(item.target.value as 'episodic' | 'sentry')} disabled={runningThis}><option value="episodic">Episodic</option><option value="sentry">Sentry</option></select></label><label>最大运行时间<input type="number" value={duration} onChange={(item) => setDuration(Number(item.target.value))} disabled={runningThis} min="1" /></label><label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="描述 Policy 要执行的任务" /></label><label className="full-field">结果数据集<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} /></label></div></WorkflowSection>{strategy === 'episodic' && <WorkflowSection title="Episode"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection>}</>}
       {kind === 'replay' && <><WorkflowSection title="回放来源"><div className="form-grid"><label className="full-field">数据集<select value={effectiveDatasetId} onChange={(item) => { setDatasetId(item.target.value); setEpisode(0); }} disabled={runningThis}>{workspace.datasets.length === 0 && <option value="">没有本地数据集</option>}{workspace.datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.id}</option>)}</select></label><label>Episode<input type="number" value={episode} onChange={(item) => setEpisode(Number(item.target.value))} disabled={runningThis} min="0" max={Math.max(0, (selectedDataset?.episodes ?? 1) - 1)} /></label></div></WorkflowSection><WorkflowSection title="执行设备">{followers.map((follower) => <div className="workflow-device" key={follower.id}><div><strong>{bindingTitle(follower.alias)}</strong><span>{serialIdentity(follower.id)}</span></div><i>已连接</i></div>)}</WorkflowSection></>}
-      <div className="workflow-actions"><span>{content.note}</span><div className="workflow-command-buttons">{runningThis && kind === 'recording' && <><button className="outline" type="button" onClick={() => void command('rerecord_episode')}>重新采集本轮</button><button className="outline" type="button" onClick={() => void command('finish_episode')}>结束本轮</button></>}<button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? '停止' : content.button}</button></div></div>
-    </div><WorkflowSummary kind={kind} configuration={configuration} dataset={selectedDataset} policy={selectedPolicy} event={event} /></div>
+      <div className="workflow-actions">{content.note && <span>{content.note}</span>}<div className="workflow-command-buttons">{runningThis && kind === 'recording' && <><button className="outline" type="button" onClick={() => void command('rerecord_episode')}>重新采集本轮</button><button className="outline" type="button" onClick={() => void command('finish_episode')}>结束本轮</button></>}<button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? '停止' : content.button}</button></div></div>
+    </div><WorkflowSummary kind={kind} configuration={configuration} dataset={selectedDataset} policy={selectedPolicy} event={event} error={visibleError} /></div>
   </section>;
 }
 
@@ -745,13 +771,13 @@ function WorkflowSection({ title, children }: { title: string; children: React.R
   return <section className="workflow-section"><h3>{title}</h3>{children}</section>;
 }
 
-function WorkflowSummary({ kind, configuration, dataset, policy, event }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; dataset?: LocalDataset; policy?: LocalPolicy; event: RuntimeEvent | null }) {
-  const state = event?.message ?? '等待开始';
-  const phaseDetail = event ? `${event.phase} · ${new Date(event.timestamp).toLocaleTimeString()}` : '尚未启动';
-  if (kind === 'teleoperation') return <aside className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={event?.data.fps ? `${Number(event.data.fps).toFixed(1)} FPS` : phaseDetail} /></aside>;
-  if (kind === 'recording') return <aside className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} /><SummaryItem label="摄像头" value={`${configuration.camera_bindings.length} 路`} detail="随数据帧同步保存" /></aside>;
-  if (kind === 'inference') return <aside className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? '未选择'} detail={policy ? `${policy.type} · 本地 checkpoint` : '未发现本地模型'} /></aside>;
-  return <aside className="workflow-summary"><SummaryItem label="回放状态" value={state} detail={event?.data.frame !== undefined ? `${String(event.data.frame)} / ${String(event.data.total_frames ?? '—')} 帧` : phaseDetail} /><SummaryItem label={dataset ? dataset.id : '数据集'} value={dataset ? `${dataset.frames} 帧` : '未选择'} detail={dataset ? `${dataset.episodes} Episodes · ${dataset.fps || '—'} FPS` : '未发现本地数据集'} /></aside>;
+function WorkflowSummary({ kind, configuration, dataset, policy, event, error }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; dataset?: LocalDataset; policy?: LocalPolicy; event: RuntimeEvent | null; error: string }) {
+  const state = error || event?.message || '等待开始';
+  const phaseDetail = error && event?.phase !== 'failed' ? '启动失败' : event ? `${event.phase} · ${new Date(event.timestamp).toLocaleTimeString()}` : '尚未启动';
+  if (kind === 'teleoperation') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={event?.data.fps ? `${Number(event.data.fps).toFixed(1)} FPS` : phaseDetail} /></div>;
+  if (kind === 'recording') return <div className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} /><SummaryItem label="摄像头" value={`${configuration.camera_bindings.length} 路`} detail="随数据帧同步保存" /></div>;
+  if (kind === 'inference') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? '未选择'} detail={policy ? `${policy.type} · 本地 checkpoint` : '未发现本地模型'} /></div>;
+  return <div className="workflow-summary"><SummaryItem label="回放状态" value={state} detail={event?.data.frame !== undefined ? `${String(event.data.frame)} / ${String(event.data.total_frames ?? '—')} 帧` : phaseDetail} /><SummaryItem label={dataset ? dataset.id : '数据集'} value={dataset ? `${dataset.frames} 帧` : '未选择'} detail={dataset ? `${dataset.episodes} Episodes · ${dataset.fps || '—'} FPS` : '未发现本地数据集'} /></div>;
 }
 
 function SummaryItem({ label, value, detail }: { label: string; value: string; detail: string }) {
