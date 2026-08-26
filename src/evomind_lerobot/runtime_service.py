@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import os
 import signal
+import sqlite3
 import threading
 from queue import Empty
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from evomind_lerobot.collection_store import CollectionStore, CollectionStoreError
 from evomind_lerobot.device_config import (
     DeviceConfiguration,
     calibration_path,
@@ -27,8 +30,10 @@ class TeleoperationStartRequest(BaseModel):
 
 
 class RecordingStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
     dataset_name: str = Field(min_length=1, max_length=80)
-    task: str = Field(min_length=1, max_length=500)
     fps: int = Field(default=30, ge=1, le=60)
     num_episodes: int = Field(default=20, ge=1, le=10_000)
     episode_time_s: int = Field(default=30, ge=1, le=86_400)
@@ -90,9 +95,7 @@ class ProcessRuntimeBridge:
         self._command_queue = command_queue
 
     def emit(self, operation: str, phase: str, data: dict[str, Any]) -> None:
-        self._event_queue.put(
-            {"kind": "event", "operation": operation, "phase": phase, "data": data}
-        )
+        self._event_queue.put({"kind": "event", "operation": operation, "phase": phase, "data": data})
 
     def take_commands(self) -> set[str]:
         commands: set[str] = set()
@@ -153,9 +156,7 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
         }
     elif bindings:
         payload["port"] = bindings[0].port
-        payload["cameras"] = {
-            camera.alias: _camera_config(camera.port, fps) for camera in camera_bindings
-        }
+        payload["cameras"] = {camera.alias: _camera_config(camera.port, fps) for camera in camera_bindings}
     return payload
 
 
@@ -239,6 +240,7 @@ def _execute_recording(payload: dict[str, Any]) -> None:
     from lerobot.configs.dataset import DatasetRecordConfig
     from lerobot.scripts.lerobot_record import RecordConfig, record
 
+    task_description = str(payload.pop("_task_description"))
     request = RecordingStartRequest.model_validate(payload)
     robot, teleop = _decode_hardware(_configuration(), request.fps)
     if teleop is None:
@@ -249,7 +251,7 @@ def _execute_recording(payload: dict[str, Any]) -> None:
             teleop=teleop,
             dataset=DatasetRecordConfig(
                 repo_id=_repo_id(request.dataset_name),
-                single_task=request.task,
+                single_task=task_description,
                 fps=request.fps,
                 num_episodes=request.num_episodes,
                 episode_time_s=request.episode_time_s,
@@ -359,9 +361,15 @@ def _run_workflow(
 class RuntimeService:
     """Own one native LeRobot workflow process at a time."""
 
-    def __init__(self, events: EventBroker, jobs: JobManager) -> None:
+    def __init__(
+        self,
+        events: EventBroker,
+        jobs: JobManager,
+        collection_store: CollectionStore | None = None,
+    ) -> None:
         self._events = events
         self._jobs = jobs
+        self._collection_store = collection_store
         self._context = multiprocessing.get_context("spawn")
         self._lock = threading.RLock()
         self._process: multiprocessing.Process | None = None
@@ -370,6 +378,12 @@ class RuntimeService:
         self._job_id = ""
         self._operation: Operation | None = None
         self._latest: dict[str, Any] | None = None
+        self._active_dataset_id: str | None = None
+
+    @property
+    def active_dataset_id(self) -> str | None:
+        with self._lock:
+            return self._active_dataset_id if self._operation is Operation.RECORDING else None
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -384,12 +398,24 @@ class RuntimeService:
     def start(self, operation: Operation, request: BaseModel) -> dict[str, Any]:
         if operation.value not in _EXECUTORS:
             raise ValueError(f"不支持的运行任务：{operation.value}")
+        payload = request.model_dump()
+        if operation is Operation.RECORDING:
+            if self._collection_store is None or not isinstance(request, RecordingStartRequest):
+                raise RuntimeError("采集进度账本未初始化")
+            task = self._collection_store.require_today_task(request.task_id)
+            payload["_task_description"] = task["description"]
         job = self._jobs.acquire(operation, f"正在启动 {operation.value}")
+        if operation is Operation.RECORDING:
+            try:
+                self._collection_store.start_session(job.id, request.task_id, request)
+            except Exception:
+                self._jobs.release(job.id, failed=True, message="采集任务启动失败")
+                raise
         event_queue = self._context.Queue()
         command_queue = self._context.Queue()
         process = self._context.Process(
             target=_run_workflow,
-            args=(operation.value, request.model_dump(), event_queue, command_queue),
+            args=(operation.value, payload, event_queue, command_queue),
             name=f"evomind-{operation.value}",
         )
         with self._lock:
@@ -401,8 +427,10 @@ class RuntimeService:
             self._latest = self._events.latest.as_dict()
         try:
             process.start()
-        except BaseException:
+        except Exception:
             self._clear()
+            if operation is Operation.RECORDING and self._collection_store is not None:
+                self._collection_store.finish_session(job.id, failed=True, error="运行任务启动失败")
             self._jobs.release(job.id, failed=True, message="运行任务启动失败")
             raise
         threading.Thread(target=self._monitor, name=f"monitor-{operation.value}", daemon=True).start()
@@ -450,6 +478,17 @@ class RuntimeService:
                 job_id=job_id,
                 data=item["data"],
             )
+            if operation is Operation.RECORDING and self._collection_store is not None:
+                try:
+                    data = item["data"]
+                    if data.get("repo_id"):
+                        with self._lock:
+                            self._active_dataset_id = str(data["repo_id"])
+                    self._collection_store.update_session_repo_id(job_id, data.get("repo_id"))
+                    if data.get("stage") == "episode_saved":
+                        self._collection_store.save_episode(job_id, data)
+                except (CollectionStoreError, KeyError, TypeError, ValueError, sqlite3.Error):
+                    logging.exception("Failed to persist recording progress")
             with self._lock:
                 self._latest = event.as_dict()
         process.join(timeout=1)
@@ -462,6 +501,8 @@ class RuntimeService:
             )
             with self._lock:
                 self._latest = event.as_dict()
+        if operation is Operation.RECORDING and self._collection_store is not None:
+            self._collection_store.finish_session(job_id, failed=bool(error), error=error)
         self._clear()
         self._jobs.release(
             job_id,
@@ -476,6 +517,7 @@ class RuntimeService:
             self._command_queue = None
             self._job_id = ""
             self._operation = None
+            self._active_dataset_id = None
 
 
 __all__ = [

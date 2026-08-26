@@ -4,7 +4,10 @@
 import { Check, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
+import { CollectionProgressPage, StorageNotice, type StorageInfo } from './collectionProgress';
+import { DatasetViewerPage } from './datasetViewer';
 import {
   armModeLabel, cameraDisplayLabel, cameraKindLabel, cameraSlotId, canAddCameraKind,
   categories, createSteps, defaultCameras, modelsFromProfiles, nextCameraDraft,
@@ -16,7 +19,7 @@ type RuntimeEvent = {
   sequence: number; operation: string; phase: string; message: string;
   job_id: string | null; data: Record<string, unknown>; timestamp: string;
 };
-type RuntimeStatus = { lerobot_version: string | null; runtime: { hostname: string }; event: RuntimeEvent };
+type RuntimeStatus = { lerobot_version: string | null; runtime: { hostname: string } & StorageInfo; event: RuntimeEvent };
 type WorkflowRuntime = { running: boolean; job_id: string | null; operation: string | null; event: RuntimeEvent | null };
 type Catalog = { systems: SystemProfile[] };
 type SerialDevice = { id: string; path: string; device: string };
@@ -26,7 +29,7 @@ type HardwareInventory = { serial: SerialDevice[]; cameras: CameraDevice[] };
 type Side = 'single' | 'left' | 'right';
 type SerialKind = 'robot' | 'teleoperator';
 type IdentificationScope = 'hardware' | 'sensors' | 'all';
-type PageId = 'device' | 'maintenance' | 'calibration' | 'teleoperation' | 'recording' | 'inference' | 'replay';
+type PageId = 'device' | 'maintenance' | 'calibration' | 'teleoperation' | 'recording' | 'collection-progress' | 'datasets' | 'inference' | 'replay';
 type SerialBinding = {
   id: string; port: string; alias: string; kind: SerialKind; side: Side;
 };
@@ -53,6 +56,7 @@ type CalibrationStatus = {
 type LocalDataset = { id: string; path: string; episodes: number; frames: number; fps: number; tasks: number };
 type LocalPolicy = { id: string; path: string; type: string };
 type WorkspaceInventory = { datasets: LocalDataset[]; policies: LocalPolicy[] };
+type DailyCollectionTask = { id: string; name: string; description: string; target_duration_s: number; actual_duration_s: number; completed: boolean };
 
 const menu: { id: PageId; label: string }[] = [
   { id: 'device', label: '设备' },
@@ -60,6 +64,8 @@ const menu: { id: PageId; label: string }[] = [
   { id: 'calibration', label: '校准' },
   { id: 'teleoperation', label: '遥操作' },
   { id: 'recording', label: '数据采集' },
+  { id: 'collection-progress', label: '采集进度' },
+  { id: 'datasets', label: '数据查看' },
   { id: 'inference', label: '推理' },
   { id: 'replay', label: '回放' },
 ];
@@ -132,6 +138,7 @@ export default function Home() {
   const [saved, setSaved] = useState<DeviceConfiguration | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceInventory>({ datasets: [], policies: [] });
   const [runtimeEvent, setRuntimeEvent] = useState<RuntimeEvent | null>(null);
+  const [workflowStatusSlot, setWorkflowStatusSlot] = useState<HTMLDivElement | null>(null);
   const [editing, setEditing] = useState(false);
   const [step, setStep] = useState<CreateStepId>('category');
   const [categoryId, setCategoryId] = useState<DeviceCategoryId | null>(null);
@@ -352,7 +359,7 @@ export default function Home() {
       <div className="runtime"><i />{!collapsed && <div><strong>{status ? '运行正常' : '正在连接'}</strong><span>LeRobot {status?.lerobot_version ?? '—'}</span></div>}</div>
     </aside>
     <main>
-      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <span>⌄</span></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
+      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{(['teleoperation', 'recording', 'inference', 'replay'] as PageId[]).includes(activePage) ? <div className="header-workflow-status" ref={setWorkflowStatusSlot} /> : activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <span>⌄</span></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
       {error && <div className="error">{error}</div>}
       {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={serialSlots(savedProfile)} cameras={cameras} mode={mode} showHardware={identificationScope !== 'sensors'} showSensors={identificationScope !== 'hardware'} serialAssignments={serialAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
         <div className="device-setup-steps">{createSteps.map((item, index) => {
@@ -368,10 +375,12 @@ export default function Home() {
       </section>)}
       {activePage === 'maintenance' && saved && <RepairPanel saved={saved} />}
       {activePage === 'calibration' && saved && <CalibrationPrototype configuration={saved} onConfigurationChange={setSaved} />}
-      {activePage === 'teleoperation' && saved && <WorkflowPage kind="teleoperation" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} onWorkspaceRefresh={refreshWorkspace} />}
-      {activePage === 'recording' && saved && <WorkflowPage kind="recording" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} onWorkspaceRefresh={refreshWorkspace} />}
-      {activePage === 'inference' && saved && <WorkflowPage kind="inference" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} onWorkspaceRefresh={refreshWorkspace} />}
-      {activePage === 'replay' && saved && <WorkflowPage kind="replay" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} onWorkspaceRefresh={refreshWorkspace} />}
+      {activePage === 'teleoperation' && saved && <WorkflowPage kind="teleoperation" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
+      {activePage === 'recording' && saved && <WorkflowPage kind="recording" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
+      {activePage === 'collection-progress' && saved && <CollectionProgressPage storage={status?.runtime ?? null} runtimeEvent={runtimeEvent} />}
+      {activePage === 'datasets' && saved && <DatasetViewerPage runtimeEvent={runtimeEvent} />}
+      {activePage === 'inference' && saved && <WorkflowPage kind="inference" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
+      {activePage === 'replay' && saved && <WorkflowPage kind="replay" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
     </main>
   </div>;
 }
@@ -690,17 +699,19 @@ function CalibrationPrototype({ configuration, onConfigurationChange }: { config
   </section>;
 }
 
-function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspaceRefresh }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; workspace: WorkspaceInventory; runtimeEvent: RuntimeEvent | null; onWorkspaceRefresh: () => void }) {
+function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, statusSlot, onWorkspaceRefresh }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; workspace: WorkspaceInventory; runtimeEvent: RuntimeEvent | null; storage: StorageInfo | null; statusSlot: HTMLDivElement | null; onWorkspaceRefresh: () => void }) {
   const followers = configuration.serial_bindings.filter((binding) => binding.kind === 'robot');
   const content = {
     teleoperation: { title: '遥操作', operation: 'teleoperation', endpoint: '/api/runtime/teleoperation/start', button: '开始遥操作', note: '' },
-    recording: { title: '数据采集', operation: 'recording', endpoint: '/api/runtime/recording/start', button: '开始采集', note: '数据保存到本机 LeRobot 数据目录' },
+    recording: { title: '数据采集', operation: 'recording', endpoint: '/api/runtime/recording/start', button: '开始采集', note: '' },
     inference: { title: '推理', operation: 'rollout', endpoint: '/api/runtime/rollout/start', button: '开始推理', note: 'Policy 将直接控制机械臂' },
     replay: { title: '回放', operation: 'replay', endpoint: '/api/runtime/replay/start', button: '开始回放', note: '回放会直接驱动机械臂执行记录动作' },
   }[kind];
   const [fps, setFps] = useState(30);
   const [datasetName, setDatasetName] = useState(kind === 'recording' ? '' : 'policy-rollout');
   const [task, setTask] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [dailyTasks, setDailyTasks] = useState<DailyCollectionTask[]>([]);
   const [episodes, setEpisodes] = useState(kind === 'recording' ? 20 : 10);
   const [episodeTime, setEpisodeTime] = useState(30);
   const [resetTime, setResetTime] = useState(10);
@@ -721,6 +732,13 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspac
   }, []);
 
   useEffect(() => {
+    if (kind !== 'recording') return;
+    readJson<DailyCollectionTask[]>('/api/collection/tasks')
+      .then((tasks) => { setDailyTasks(tasks); setTaskId((current) => current || tasks[0]?.id || ''); })
+      .catch(() => setDailyTasks([]));
+  }, [kind]);
+
+  useEffect(() => {
     if (wasRunning.current && !runtime.running) onWorkspaceRefresh();
     wasRunning.current = runtime.running;
   }, [onWorkspaceRefresh, runtime.running]);
@@ -729,6 +747,7 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspac
   const effectiveDatasetId = datasetId || workspace.datasets[0]?.id || '';
   const selectedDataset = workspace.datasets.find((item) => item.id === effectiveDatasetId);
   const selectedPolicy = workspace.policies.find((item) => item.path === effectivePolicyPath);
+  const selectedTask = dailyTasks.find((item) => item.id === taskId);
   const runningThis = runtime.running && runtime.operation === content.operation;
   const runningOther = runtime.running && !runningThis;
   const event = runtimeEvent?.operation === content.operation
@@ -739,7 +758,7 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspac
   async function start() {
     setOperationError('');
     let body: Record<string, unknown> = { fps };
-    if (kind === 'recording') body = { dataset_name: datasetName, task, fps, num_episodes: episodes, episode_time_s: episodeTime, reset_time_s: resetTime };
+    if (kind === 'recording') body = { dataset_name: datasetName, task_id: taskId, fps, num_episodes: episodes, episode_time_s: episodeTime, reset_time_s: resetTime };
     if (kind === 'inference') body = { policy_path: effectivePolicyPath, strategy, task, dataset_name: datasetName, fps, duration_s: duration, num_episodes: episodes, episode_time_s: episodeTime, reset_time_s: resetTime };
     if (kind === 'replay') body = { dataset_id: effectiveDatasetId, episode };
     try { setRuntime(await postJson<WorkflowRuntime>(content.endpoint, body)); }
@@ -752,18 +771,21 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, onWorkspac
   }
 
   const canStart = kind === 'teleoperation'
-    || (kind === 'recording' && Boolean(datasetName.trim() && task.trim()))
+    || (kind === 'recording' && Boolean(datasetName.trim() && taskId))
     || (kind === 'inference' && Boolean(effectivePolicyPath && datasetName.trim() && task.trim()))
     || (kind === 'replay' && Boolean(selectedDataset));
 
-  return <section className={`workflow-page${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}`}>
+  const compactWorkflow = kind === 'teleoperation' || kind === 'recording';
+
+  return <section className={`workflow-page${compactWorkflow ? ' compact-workflow' : ''}${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}${kind === 'recording' ? ' recording-workflow' : ''}`}>
+    {statusSlot && createPortal(<WorkflowSummary kind={kind} dataset={selectedDataset} policy={selectedPolicy} event={event} error={visibleError} />, statusSlot)}
     <div className="workflow-grid"><div className="workflow-primary">
       {kind === 'teleoperation' && <WorkflowSection title="控制设置"><div className="form-grid"><label className="full-field">控制频率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label></div></WorkflowSection>}
-      {kind === 'recording' && <><WorkflowSection title="数据集"><div className="form-grid"><label className="full-field">数据集名称<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} placeholder="输入数据集名称" /></label><label className="full-field">任务描述<textarea value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="描述本次采集任务" /></label></div></WorkflowSection><WorkflowSection title="采集设置"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection></>}
+      {kind === 'recording' && <><WorkflowSection title="数据集"><div className="form-grid"><label className="full-field">今日任务<select value={taskId} onChange={(item) => setTaskId(item.target.value)} disabled={runningThis}>{dailyTasks.length === 0 && <option value="">请先在采集进度中创建今日任务</option>}{dailyTasks.map((item) => <option value={item.id} key={item.id}>{item.name}{item.completed ? ' · 已完成' : ''}</option>)}</select></label>{selectedTask && <div className="selected-task-description"><span>任务描述</span><strong>{selectedTask.description}</strong><small>目标 {Math.round(selectedTask.target_duration_s / 60)} 分钟 · 已完成 {Math.round(selectedTask.actual_duration_s / 60)} 分钟</small></div>}<label className="full-field">数据集名称<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} placeholder="输入数据集名称" /></label></div></WorkflowSection><WorkflowSection title="采集设置"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection><StorageNotice initial={storage} refreshKey={runtimeEvent?.operation === 'recording' && runtimeEvent.data.stage === 'episode_saved' ? runtimeEvent.sequence : null} /></>}
       {kind === 'inference' && <><WorkflowSection title="策略"><div className="form-grid"><label className="full-field">Policy<input list="local-policies" value={effectivePolicyPath} onChange={(item) => setPolicyPath(item.target.value)} disabled={runningThis} placeholder="本地路径或 Hugging Face repo id" /><datalist id="local-policies">{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id}</option>)}</datalist></label><label>Rollout 策略<select value={strategy} onChange={(item) => setStrategy(item.target.value as 'episodic' | 'sentry')} disabled={runningThis}><option value="episodic">Episodic</option><option value="sentry">Sentry</option></select></label><label>最大运行时间<input type="number" value={duration} onChange={(item) => setDuration(Number(item.target.value))} disabled={runningThis} min="1" /></label><label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="描述 Policy 要执行的任务" /></label><label className="full-field">结果数据集<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} /></label></div></WorkflowSection>{strategy === 'episodic' && <WorkflowSection title="Episode"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection>}</>}
       {kind === 'replay' && <><WorkflowSection title="回放来源"><div className="form-grid"><label className="full-field">数据集<select value={effectiveDatasetId} onChange={(item) => { setDatasetId(item.target.value); setEpisode(0); }} disabled={runningThis}>{workspace.datasets.length === 0 && <option value="">没有本地数据集</option>}{workspace.datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.id}</option>)}</select></label><label>Episode<input type="number" value={episode} onChange={(item) => setEpisode(Number(item.target.value))} disabled={runningThis} min="0" max={Math.max(0, (selectedDataset?.episodes ?? 1) - 1)} /></label></div></WorkflowSection><WorkflowSection title="执行设备">{followers.map((follower) => <div className="workflow-device" key={follower.id}><div><strong>{bindingTitle(follower.alias)}</strong><span>{serialIdentity(follower.id)}</span></div><i>已连接</i></div>)}</WorkflowSection></>}
-      <div className="workflow-actions">{content.note && <span>{content.note}</span>}<div className="workflow-command-buttons">{runningThis && kind === 'recording' && <><button className="outline" type="button" onClick={() => void command('rerecord_episode')}>重新采集本轮</button><button className="outline" type="button" onClick={() => void command('finish_episode')}>结束本轮</button></>}<button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? '停止' : content.button}</button></div></div>
-    </div><WorkflowSummary kind={kind} configuration={configuration} dataset={selectedDataset} policy={selectedPolicy} event={event} error={visibleError} /></div>
+      <div className="workflow-actions">{content.note && <span>{content.note}</span>}<div className={`workflow-command-buttons${runningThis && kind === 'recording' ? ' episode-controls' : ''}`}>{runningThis && kind === 'recording' && <><button className="outline" type="button" onClick={() => void command('rerecord_episode')}>重新采集本轮</button><button className="outline" type="button" onClick={() => void command('finish_episode')}>结束本轮</button></>}<button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? '停止' : content.button}</button></div></div>
+    </div></div>
   </section>;
 }
 
@@ -771,11 +793,11 @@ function WorkflowSection({ title, children }: { title: string; children: React.R
   return <section className="workflow-section"><h3>{title}</h3>{children}</section>;
 }
 
-function WorkflowSummary({ kind, configuration, dataset, policy, event, error }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; dataset?: LocalDataset; policy?: LocalPolicy; event: RuntimeEvent | null; error: string }) {
+function WorkflowSummary({ kind, dataset, policy, event, error }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; dataset?: LocalDataset; policy?: LocalPolicy; event: RuntimeEvent | null; error: string }) {
   const state = error || event?.message || '等待开始';
   const phaseDetail = error && event?.phase !== 'failed' ? '启动失败' : event ? `${event.phase} · ${new Date(event.timestamp).toLocaleTimeString()}` : '尚未启动';
   if (kind === 'teleoperation') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={event?.data.fps ? `${Number(event.data.fps).toFixed(1)} FPS` : phaseDetail} /></div>;
-  if (kind === 'recording') return <div className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} /><SummaryItem label="摄像头" value={`${configuration.camera_bindings.length} 路`} detail="随数据帧同步保存" /></div>;
+  if (kind === 'recording') return <div className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} /></div>;
   if (kind === 'inference') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? '未选择'} detail={policy ? `${policy.type} · 本地 checkpoint` : '未发现本地模型'} /></div>;
   return <div className="workflow-summary"><SummaryItem label="回放状态" value={state} detail={event?.data.frame !== undefined ? `${String(event.data.frame)} / ${String(event.data.total_frames ?? '—')} 帧` : phaseDetail} /><SummaryItem label={dataset ? dataset.id : '数据集'} value={dataset ? `${dataset.frames} 帧` : '未选择'} detail={dataset ? `${dataset.episodes} Episodes · ${dataset.fps || '—'} FPS` : '未发现本地数据集'} /></div>;
 }

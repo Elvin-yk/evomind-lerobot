@@ -481,6 +481,12 @@ def record(
                 streaming_encoding=cfg.dataset.streaming_encoding,
                 encoder_queue_maxsize=cfg.dataset.encoder_queue_maxsize,
             )
+            emit_runtime_event(
+                "recording",
+                "starting",
+                stage="dataset_created",
+                repo_id=cfg.dataset.repo_id,
+            )
 
         # Connect the teleoperator before the robot so the robot isn't left idle (and possibly
         # tripping a firmware watchdog) during teleop init. Matches lerobot_teleoperate.py.
@@ -506,6 +512,7 @@ def record(
                     "running",
                     stage="episode",
                     episode=dataset.num_episodes,
+                    repo_id=cfg.dataset.repo_id,
                     target_episodes=cfg.dataset.num_episodes,
                     control_source="teleoperation",
                 )
@@ -524,6 +531,10 @@ def record(
                     display_mode=cfg.display_mode,
                     display_compressed_images=display_compressed_images,
                 )
+
+                if events["stop_recording"]:
+                    dataset.clear_episode_buffer()
+                    break
 
                 # Execute a few seconds without recording to give time to manually reset the environment
                 # Skip reset for the last episode to be recorded
@@ -560,12 +571,19 @@ def record(
                     continue
 
                 emit_runtime_event("recording", "saving", episode=dataset.num_episodes)
+                saved_episode_index = dataset.num_episodes
+                saved_episode_frames = int(dataset.writer.episode_buffer["size"])
                 dataset.save_episode()
                 recorded_episodes += 1
                 emit_runtime_event(
                     "recording",
                     "running",
                     stage="episode_saved",
+                    repo_id=cfg.dataset.repo_id,
+                    episode_index=saved_episode_index,
+                    frames=saved_episode_frames,
+                    fps=cfg.dataset.fps,
+                    duration_s=saved_episode_frames / cfg.dataset.fps,
                     saved_episodes=recorded_episodes,
                     target_episodes=cfg.dataset.num_episodes,
                 )

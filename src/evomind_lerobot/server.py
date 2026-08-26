@@ -4,20 +4,36 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 try:
     from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 except ImportError as error:
     raise ImportError("Install the local console with `pip install 'lerobot[console]'`") from error
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from evomind_lerobot.calibration_service import CalibrationService
 from evomind_lerobot.catalog import hardware_catalog
+from evomind_lerobot.collection_store import (
+    CollectionStore,
+    CollectionTaskConflictError,
+    CollectionTaskNotFoundError,
+    local_today,
+)
+from evomind_lerobot.dataset_browser import (
+    DatasetNotFoundError,
+    DatasetUnavailableError,
+    dataset_detail,
+    dataset_episode,
+    dataset_video_path,
+    datasets_catalog,
+)
 from evomind_lerobot.device_config import (
     DeviceConfiguration,
     load_device_configuration,
@@ -65,6 +81,35 @@ class CalibrationAutoStartRequest(BaseModel):
     alias: str | None = Field(default=None, min_length=1)
 
 
+class CollectionTaskCreateRequest(BaseModel):
+    work_date: date = Field(default_factory=local_today)
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=500)
+    target_duration_s: float = Field(gt=0, le=604_800)
+
+    @field_validator("name", "description")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("内容不能为空")
+        return value
+
+
+class CollectionTaskUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=500)
+    target_duration_s: float = Field(gt=0, le=604_800)
+
+    @field_validator("name", "description")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("内容不能为空")
+        return value
+
+
 def _package_version(name: str) -> str | None:
     try:
         return version(name)
@@ -75,13 +120,15 @@ def _package_version(name: str) -> str | None:
 def create_app():
     events = EventBroker()
     jobs = JobManager(events)
+    collection_store = CollectionStore()
     calibration = CalibrationService(events, jobs)
-    runtime = RuntimeService(events, jobs)
+    runtime = RuntimeService(events, jobs, collection_store)
     app = FastAPI(title="Evomind LeRobot Console", version="0.1.0")
     app.state.events = events
     app.state.jobs = jobs
     app.state.calibration = calibration
     app.state.runtime = runtime
+    app.state.collection_store = collection_store
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -116,6 +163,104 @@ def create_app():
     @app.get("/api/workspace")
     def workspace():
         return workspace_inventory()
+
+    @app.get("/api/collection/tasks")
+    def collection_tasks(work_date: date | None = None):
+        return collection_store.list_tasks(work_date or local_today())
+
+    @app.post("/api/collection/tasks")
+    def create_collection_task(body: CollectionTaskCreateRequest):
+        try:
+            return collection_store.create_task(
+                work_date=body.work_date,
+                name=body.name,
+                description=body.description,
+                target_duration_s=body.target_duration_s,
+            )
+        except CollectionTaskConflictError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.put("/api/collection/tasks/{task_id}")
+    def update_collection_task(task_id: str, body: CollectionTaskUpdateRequest):
+        try:
+            return collection_store.update_task(
+                task_id,
+                name=body.name,
+                description=body.description,
+                target_duration_s=body.target_duration_s,
+            )
+        except CollectionTaskNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except CollectionTaskConflictError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.delete("/api/collection/tasks/{task_id}")
+    def delete_collection_task(task_id: str):
+        try:
+            collection_store.delete_task(task_id)
+        except CollectionTaskNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except CollectionTaskConflictError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"ok": True}
+
+    @app.get("/api/collection/progress")
+    def collection_progress(work_date: date | None = None, window: int = 7):
+        if window not in {7, 30}:
+            raise HTTPException(400, "趋势窗口只能是 7 或 30 天")
+        selected_date = work_date or local_today()
+        progress = collection_store.progress(selected_date, window)
+        active_session = progress["active_session"]
+        if active_session and active_session["work_date"] == selected_date.isoformat():
+            active_session["event"] = runtime.status()["event"]
+        else:
+            progress["active_session"] = None
+        return progress
+
+    @app.get("/api/datasets")
+    def datasets():
+        return datasets_catalog(runtime.active_dataset_id)
+
+    @app.get("/api/dataset/detail")
+    def read_dataset_detail(dataset_id: str):
+        try:
+            return dataset_detail(dataset_id, runtime.active_dataset_id)
+        except DatasetNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except DatasetUnavailableError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.get("/api/dataset/episode")
+    def read_dataset_episode(dataset_id: str, episode: int = 0):
+        try:
+            return dataset_episode(
+                dataset_id,
+                episode,
+                active_dataset_id=runtime.active_dataset_id,
+            )
+        except DatasetNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except DatasetUnavailableError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.get("/api/dataset/video")
+    def read_dataset_video(dataset_id: str, episode: int, camera: str):
+        try:
+            path = dataset_video_path(
+                dataset_id,
+                episode,
+                camera,
+                active_dataset_id=runtime.active_dataset_id,
+            )
+        except DatasetNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except DatasetUnavailableError as error:
+            raise HTTPException(409, str(error)) from error
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            headers={"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"},
+        )
 
     @app.get("/api/config")
     def read_configuration():
@@ -160,14 +305,16 @@ def create_app():
         serial_devices = {device["id"]: device for device in inventory["serial"]}
         camera_devices = {device["id"]: device for device in inventory["cameras"]}
         current_configuration = load_device_configuration()
-        unchanged_serial = {
-            (binding.alias, binding.id, binding.port)
-            for binding in current_configuration.serial_bindings
-        } if current_configuration else set()
-        unchanged_cameras = {
-            (binding.alias, binding.id, binding.port)
-            for binding in current_configuration.camera_bindings
-        } if current_configuration else set()
+        unchanged_serial = (
+            {(binding.alias, binding.id, binding.port) for binding in current_configuration.serial_bindings}
+            if current_configuration
+            else set()
+        )
+        unchanged_cameras = (
+            {(binding.alias, binding.id, binding.port) for binding in current_configuration.camera_bindings}
+            if current_configuration
+            else set()
+        )
         for binding in configuration.serial_bindings:
             if (binding.alias, binding.id, binding.port) in unchanged_serial:
                 continue
@@ -263,6 +410,10 @@ def create_app():
     def runtime_recording_start(body: RecordingStartRequest):
         try:
             return runtime.start(Operation.RECORDING, body)
+        except CollectionTaskNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except CollectionTaskConflictError as error:
+            raise HTTPException(409, str(error)) from error
         except HardwareBusyError as error:
             raise HTTPException(409, str(error)) from error
 
