@@ -265,6 +265,11 @@ code { font-family: var(--font-geist-mono), monospace; }
 .storage-notice.warning small { color: #9a5b00; }
 
 .progress-page, .dataset-page { display: grid; gap: 18px; }
+.progress-view-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; border: 1px solid var(--line); border-radius: 8px; background: #f3f3f3; padding: 4px; }
+.progress-view-switch button { display: grid; gap: 3px; border: 0; border-radius: 6px; background: transparent; padding: 11px 14px; color: #777; text-align: left; }
+.progress-view-switch button.active { background: #fff; color: #111; box-shadow: 0 1px 4px rgb(0 0 0 / 10%); }
+.progress-view-switch strong { font-size: 13px; font-weight: 600; }
+.progress-view-switch small { color: var(--subtle); font-size: 10px; }
 .page-toolbar, .dataset-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .date-controls, .editor-actions { display: flex; align-items: center; gap: 8px; }
 .date-controls input { width: 160px; }
@@ -445,6 +450,7 @@ code { font-family: var(--font-geist-mono), monospace; }
   .workflow-grid { grid-template-columns: 1fr; gap: 24px; }
   .full-field { grid-column: 1; }
   .page-toolbar, .dataset-toolbar, .episode-toolbar { align-items: stretch; flex-direction: column; }
+  .progress-view-switch { grid-template-columns: 1fr; }
   .date-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); }
   .date-controls input { width: 100%; }
   .metric-grid, .active-collection-card, .dataset-overview-metrics { grid-template-columns: 1fr; }

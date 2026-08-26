@@ -94,6 +94,7 @@ export function StorageNotice({ initial, refreshKey = null }: { initial: Storage
 
 export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent | null }) {
   const today = shanghaiDate();
+  const [view, setView] = useState<'tasks' | 'stats'>('tasks');
   const [selectedDate, setSelectedDate] = useState(today);
   const [windowDays, setWindowDays] = useState<7 | 30>(7);
   const [progress, setProgress] = useState<ProgressPayload>(EMPTY_PROGRESS);
@@ -160,30 +161,29 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   const isToday = selectedDate === today;
 
   return <section className="progress-page">
+    <div className="progress-view-switch" role="tablist" aria-label="采集进度视图">
+      <button className={view === 'tasks' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'tasks'} onClick={() => setView('tasks')}><strong>任务与进度</strong><small>安排当天任务，查看采集执行情况</small></button>
+      <button className={view === 'stats' ? 'active' : ''} type="button" role="tab" aria-selected={view === 'stats'} onClick={() => setView('stats')}><strong>统计与趋势</strong><small>查看有效时长、完成率和每日趋势</small></button>
+    </div>
+
     <div className="page-toolbar">
       <div className="date-controls">
         <button className="outline" type="button" onClick={() => setSelectedDate(today)}>今天</button>
         <input aria-label="选择日期" type="date" value={selectedDate} onChange={(item) => setSelectedDate(item.target.value)} />
       </div>
-      <div className="segmented-small" role="group" aria-label="趋势范围">
+      {view === 'stats' && <div className="segmented-small" role="group" aria-label="趋势范围">
         {([7, 30] as const).map((days) => <button className={windowDays === days ? 'active' : ''} type="button" onClick={() => setWindowDays(days)} key={days}>{days} 天</button>)}
-      </div>
+      </div>}
     </div>
 
     {error && <div className="error compact">{error}</div>}
 
-    <div className="metric-grid">
+    {view === 'stats' && <><div className="metric-grid">
       <Metric label="有效时长" value={durationLabel(progress.summary.actual_duration_s)} detail={`目标 ${durationLabel(progress.summary.target_duration_s)}`} />
       <Metric label="今日进度" value={`${progress.summary.progress_percent.toFixed(0)}%`} detail="按成功保存时长统计" />
       <Metric label="Episodes" value={String(progress.summary.episode_count)} detail="实际保存数量" />
       <Metric label="任务" value={`${progress.summary.completed_tasks} / ${progress.summary.total_tasks}`} detail="已完成 / 总数" />
     </div>
-
-    {progress.active_session && <section className="active-collection-card">
-      <div><span>正在采集</span><strong>{progress.active_session.task_name}</strong><small>{progress.active_session.repo_id || progress.active_session.dataset_name}</small></div>
-      <div><span>当前阶段</span><strong>{event?.message || '正在启动数据采集'}</strong><small>{stage || 'starting'}{currentEpisode !== undefined ? ` · Episode ${String(currentEpisode)}` : ''}</small></div>
-      <div><span>本次已保存</span><strong>{durationLabel(progress.active_session.saved_duration_s)}</strong><small>{progress.active_session.saved_episodes} Episodes</small></div>
-    </section>}
 
     <section className="progress-section">
       <div className="section-heading"><div><span>每日趋势</span><h2>最近 {windowDays} 天</h2></div><div className="trend-legend"><span><i />有效时长</span><span><i />目标时长</span></div></div>
@@ -193,7 +193,13 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
           {(windowDays === 7 || index % 5 === 0 || index === progress.trend.length - 1) && <span>{item.date.slice(5)}</span>}
         </div>)}
       </div>
-    </section>
+    </section></>}
+
+    {view === 'tasks' && <>{progress.active_session && <section className="active-collection-card">
+      <div><span>正在采集</span><strong>{progress.active_session.task_name}</strong><small>{progress.active_session.repo_id || progress.active_session.dataset_name}</small></div>
+      <div><span>当前阶段</span><strong>{event?.message || '正在启动数据采集'}</strong><small>{stage || 'starting'}{currentEpisode !== undefined ? ` · Episode ${String(currentEpisode)}` : ''}</small></div>
+      <div><span>本次已保存</span><strong>{durationLabel(progress.active_session.saved_duration_s)}</strong><small>{progress.active_session.saved_episodes} Episodes</small></div>
+    </section>}
 
     <section className="progress-section">
       <div className="section-heading"><div><span>{selectedDate}</span><h2>任务进度</h2></div></div>
@@ -217,7 +223,7 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
         <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} placeholder="写入 LeRobot 数据集的完整任务描述" /></label>
       </div>
       <div className="editor-actions">{editingId && <button className="outline" type="button" onClick={resetForm}>取消</button>}<button className="primary inline-icon" type="button" onClick={() => void saveTask()} disabled={!name.trim() || !description.trim() || !Number.isFinite(targetMinutes) || targetMinutes <= 0}><Plus size={15} />{editingId ? '保存修改' : '添加任务'}</button></div>
-    </section>}
+    </section>}</>}
   </section>;
 }
 
