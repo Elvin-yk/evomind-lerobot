@@ -699,6 +699,65 @@ function CalibrationPrototype({ configuration, onConfigurationChange }: { config
   </section>;
 }
 
+function RememberedNumberInput({ value, onCommit, storageKey, min, max, disabled }: {
+  value: number;
+  onCommit: (value: number) => void;
+  storageKey: string;
+  min: number;
+  max?: number;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  const normalize = useCallback((candidate: string) => {
+    const parsed = Number(candidate);
+    if (!candidate.trim() || !Number.isFinite(parsed)) return null;
+    return Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min, Math.trunc(parsed)));
+  }, [max, min]);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    try {
+      const remembered = window.localStorage.getItem(storageKey);
+      if (remembered === null) return;
+      const next = normalize(remembered);
+      if (next === null) return;
+      timer = window.setTimeout(() => {
+        setDraft(String(next));
+        onCommit(next);
+      }, 0);
+    } catch { /* Local storage can be unavailable in hardened browsers. */ }
+    return () => { if (timer !== undefined) window.clearTimeout(timer); };
+  }, [normalize, onCommit, storageKey]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDraft(String(value)), 0);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+
+  function commit() {
+    const next = normalize(draft);
+    if (next === null) {
+      setDraft(String(value));
+      return;
+    }
+    setDraft(String(next));
+    onCommit(next);
+    try { window.localStorage.setItem(storageKey, String(next)); } catch { /* Keep the input usable without persistence. */ }
+  }
+
+  return <input
+    type="number"
+    value={draft}
+    onChange={(event) => setDraft(event.target.value)}
+    onBlur={commit}
+    onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+    disabled={disabled}
+    min={min}
+    max={max}
+  />;
+}
+
 function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, statusSlot, onWorkspaceRefresh }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; workspace: WorkspaceInventory; runtimeEvent: RuntimeEvent | null; storage: StorageInfo | null; statusSlot: HTMLDivElement | null; onWorkspaceRefresh: () => void }) {
   const followers = configuration.serial_bindings.filter((binding) => binding.kind === 'robot');
   const content = {
@@ -722,6 +781,8 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   const [episode, setEpisode] = useState(0);
   const [runtime, setRuntime] = useState<WorkflowRuntime>({ running: false, job_id: null, operation: null, event: null });
   const [operationError, setOperationError] = useState('');
+  const [pendingCommand, setPendingCommand] = useState<'stop' | 'finish_episode' | 'rerecord_episode' | null>(null);
+  const pendingSequence = useRef(0);
   const wasRunning = useRef(false);
 
   useEffect(() => {
@@ -736,6 +797,15 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
     readJson<DailyCollectionTask[]>('/api/collection/tasks')
       .then((tasks) => { setDailyTasks(tasks); setTaskId((current) => current || tasks[0]?.id || ''); })
       .catch(() => setDailyTasks([]));
+  }, [kind]);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    try {
+      const remembered = Number(window.localStorage.getItem(`evomind-lerobot:${kind}:fps`));
+      if ([15, 20, 30].includes(remembered)) timer = window.setTimeout(() => setFps(remembered), 0);
+    } catch { /* Use the default FPS when local storage is unavailable. */ }
+    return () => { if (timer !== undefined) window.clearTimeout(timer); };
   }, [kind]);
 
   useEffect(() => {
@@ -755,6 +825,15 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
     : runtime.event?.operation === content.operation ? runtime.event : null;
   const visibleError = operationError || (event?.phase === 'failed' ? event.message : '');
 
+  useEffect(() => {
+    if (pendingCommand && event && event.sequence > pendingSequence.current) setPendingCommand(null);
+  }, [event, pendingCommand]);
+
+  function updateFps(value: number) {
+    setFps(value);
+    try { window.localStorage.setItem(`evomind-lerobot:${kind}:fps`, String(value)); } catch { /* Keep the selector usable without persistence. */ }
+  }
+
   async function start() {
     setOperationError('');
     let body: Record<string, unknown> = { fps };
@@ -766,8 +845,13 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   }
 
   async function command(value: 'stop' | 'finish_episode' | 'rerecord_episode') {
+    pendingSequence.current = event?.sequence ?? 0;
+    setPendingCommand(value);
     try { setRuntime(await postJson<WorkflowRuntime>('/api/runtime/command', { command: value })); }
-    catch (commandError) { setOperationError(commandError instanceof Error ? commandError.message : '操作失败'); }
+    catch (commandError) {
+      setPendingCommand(null);
+      setOperationError(commandError instanceof Error ? commandError.message : '操作失败');
+    }
   }
 
   const canStart = kind === 'teleoperation'
@@ -776,15 +860,18 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
     || (kind === 'replay' && Boolean(selectedDataset));
 
   const compactWorkflow = kind === 'teleoperation' || kind === 'recording';
+  const recordingPhase = event?.phase;
+  const canControlEpisode = runningThis && recordingPhase === 'running' && !pendingCommand;
+  const canSkipReset = runningThis && recordingPhase === 'resetting' && !pendingCommand;
 
   return <section className={`workflow-page${compactWorkflow ? ' compact-workflow' : ''}${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}${kind === 'recording' ? ' recording-workflow' : ''}`}>
     {statusSlot && createPortal(<WorkflowSummary kind={kind} dataset={selectedDataset} policy={selectedPolicy} event={event} error={visibleError} />, statusSlot)}
     <div className="workflow-grid"><div className="workflow-primary">
-      {kind === 'teleoperation' && <WorkflowSection title="控制设置"><div className="form-grid"><label className="full-field">控制频率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label></div></WorkflowSection>}
-      {kind === 'recording' && <><StorageNotice initial={storage} refreshKey={runtimeEvent?.operation === 'recording' && runtimeEvent.data.stage === 'episode_saved' ? runtimeEvent.sequence : null} /><WorkflowSection title="数据集"><div className="form-grid"><label className="full-field">今日任务<select value={taskId} onChange={(item) => setTaskId(item.target.value)} disabled={runningThis}>{dailyTasks.length === 0 && <option value="">请先在采集进度中创建今日任务</option>}{dailyTasks.map((item) => <option value={item.id} key={item.id}>{item.name}{item.completed ? ' · 已完成' : ''}</option>)}</select></label>{selectedTask && <div className="selected-task-description"><span>任务描述</span><strong>{selectedTask.description}</strong><small>目标 {Math.round(selectedTask.target_duration_s / 60)} 分钟 · 已完成 {Math.round(selectedTask.actual_duration_s / 60)} 分钟</small></div>}</div></WorkflowSection><WorkflowSection title="采集设置"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection></>}
+      {kind === 'teleoperation' && <WorkflowSection title="控制设置"><div className="form-grid"><label className="full-field">控制频率<select value={fps} onChange={(item) => updateFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label></div></WorkflowSection>}
+      {kind === 'recording' && <><StorageNotice initial={storage} refreshKey={runtimeEvent?.operation === 'recording' && runtimeEvent.data.stage === 'episode_saved' ? runtimeEvent.sequence : null} /><WorkflowSection title="数据集"><div className="form-grid"><label className="full-field">今日任务<select value={taskId} onChange={(item) => setTaskId(item.target.value)} disabled={runningThis}>{dailyTasks.length === 0 && <option value="">请先在采集进度中创建今日任务</option>}{dailyTasks.map((item) => <option value={item.id} key={item.id}>{item.name}{item.completed ? ' · 已完成' : ''}</option>)}</select></label>{selectedTask && <div className="selected-task-description"><span>任务描述</span><strong>{selectedTask.description}</strong><small>目标 {Math.round(selectedTask.target_duration_s / 60)} 分钟 · 已完成 {Math.round(selectedTask.actual_duration_s / 60)} 分钟</small></div>}</div></WorkflowSection><WorkflowSection title="采集设置"><div className="form-grid"><label>采集轮数<RememberedNumberInput value={episodes} onCommit={setEpisodes} storageKey="evomind-lerobot:recording:num-episodes" min={1} max={10_000} disabled={runningThis} /></label><label>单轮时长<RememberedNumberInput value={episodeTime} onCommit={setEpisodeTime} storageKey="evomind-lerobot:recording:episode-time" min={1} max={86_400} disabled={runningThis} /></label><label>重置时间<RememberedNumberInput value={resetTime} onCommit={setResetTime} storageKey="evomind-lerobot:recording:reset-time" min={0} max={86_400} disabled={runningThis} /></label><label>帧率<select value={fps} onChange={(item) => updateFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection></>}
       {kind === 'inference' && <><WorkflowSection title="策略"><div className="form-grid"><label className="full-field">Policy<input list="local-policies" value={effectivePolicyPath} onChange={(item) => setPolicyPath(item.target.value)} disabled={runningThis} placeholder="本地路径或 Hugging Face repo id" /><datalist id="local-policies">{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id}</option>)}</datalist></label><label>Rollout 策略<select value={strategy} onChange={(item) => setStrategy(item.target.value as 'episodic' | 'sentry')} disabled={runningThis}><option value="episodic">Episodic</option><option value="sentry">Sentry</option></select></label><label>最大运行时间<input type="number" value={duration} onChange={(item) => setDuration(Number(item.target.value))} disabled={runningThis} min="1" /></label><label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="描述 Policy 要执行的任务" /></label><label className="full-field">结果数据集<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} /></label></div></WorkflowSection>{strategy === 'episodic' && <WorkflowSection title="Episode"><div className="form-grid"><label>采集轮数<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label><label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label></div></WorkflowSection>}</>}
       {kind === 'replay' && <><WorkflowSection title="回放来源"><div className="form-grid"><label className="full-field">数据集<select value={effectiveDatasetId} onChange={(item) => { setDatasetId(item.target.value); setEpisode(0); }} disabled={runningThis}>{workspace.datasets.length === 0 && <option value="">没有本地数据集</option>}{workspace.datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.id}</option>)}</select></label><label>Episode<input type="number" value={episode} onChange={(item) => setEpisode(Number(item.target.value))} disabled={runningThis} min="0" max={Math.max(0, (selectedDataset?.episodes ?? 1) - 1)} /></label></div></WorkflowSection><WorkflowSection title="执行设备">{followers.map((follower) => <div className="workflow-device" key={follower.id}><div><strong>{bindingTitle(follower.alias)}</strong><span>{serialIdentity(follower.id)}</span></div><i>已连接</i></div>)}</WorkflowSection></>}
-      <div className="workflow-actions">{content.note && <span>{content.note}</span>}<div className={`workflow-command-buttons${runningThis && kind === 'recording' ? ' episode-controls' : ''}`}>{runningThis && kind === 'recording' && <><button className="outline" type="button" onClick={() => void command('rerecord_episode')}>重新采集本轮</button><button className="outline" type="button" onClick={() => void command('finish_episode')}>结束本轮</button></>}<button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? '停止' : content.button}</button></div></div>
+      <div className="workflow-actions">{content.note && <span>{content.note}</span>}<div className={`workflow-command-buttons${runningThis && kind === 'recording' ? ` episode-controls${recordingPhase === 'resetting' ? ' resetting-controls' : ''}` : ''}`}>{runningThis && kind === 'recording' && <><button className="primary" type="button" disabled={!canControlEpisode} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' && recordingPhase !== 'resetting' ? '正在保存' : '保存这一段'}</button><button className="outline" type="button" disabled={!canControlEpisode} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录这一段'}</button>{recordingPhase === 'resetting' && <button className="outline" type="button" disabled={!canSkipReset} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在跳过' : '跳过等待'}</button>}</>}<button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || Boolean(pendingCommand) || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? pendingCommand === 'stop' ? '正在结束' : kind === 'recording' ? '结束采集' : '停止' : content.button}</button></div></div>
     </div></div>
   </section>;
 }

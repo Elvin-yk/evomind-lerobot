@@ -251,6 +251,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .compact-workflow .workflow-actions { display: block; padding-top: 14px; }
 .compact-workflow .workflow-command-buttons { display: grid; grid-template-columns: minmax(0, 1fr); }
 .compact-workflow .workflow-command-buttons.episode-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.compact-workflow .workflow-command-buttons.resetting-controls { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .compact-workflow .workflow-command-buttons button { width: 100%; min-height: 46px; }
 .recording-workflow .workflow-section textarea { min-height: 64px; }
 .selected-task-description { display: grid; grid-column: 1 / -1; gap: 4px; border-left: 2px solid #111; background: #f3f3f3; padding: 11px 13px; }
@@ -323,25 +324,32 @@ code { font-family: var(--font-geist-mono), monospace; }
 .task-editor .editor-actions { justify-content: flex-end; }
 
 .dataset-toolbar input { max-width: 420px; }
-.dataset-browser-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 560px; border-top: 1px solid var(--line); }
-.dataset-library { min-width: 0; border-right: 1px solid var(--line); padding: 16px 14px 0 0; }
-.dataset-library-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; color: var(--subtle); font-size: 11px; }
-.dataset-library-heading strong { color: #333; }
-.dataset-library-list { display: grid; }
-.dataset-library-list > button { display: grid; min-width: 0; gap: 9px; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 13px 10px; color: #111; text-align: left; }
-.dataset-library-list > button:first-child { border-top: 1px solid var(--line); }
-.dataset-library-list > button:hover:not(:disabled), .dataset-library-list > button.active { background: #f0f0f0; }
-.dataset-library-list > button:disabled { cursor: default; opacity: .62; }
-.dataset-library-list button > span:first-child { display: grid; min-width: 0; gap: 4px; }
-.dataset-library-list button strong, .dataset-library-list button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dataset-library-list button strong { font-size: 13px; }
-.dataset-library-list button small, .dataset-library-list button em { color: var(--subtle); font-size: 10px; font-style: normal; }
-.dataset-library-list button > span:nth-child(2) { display: flex; align-items: center; gap: 6px; color: #666; font-size: 10px; }
-.dataset-status { display: block; width: 6px; height: 6px; border-radius: 50%; background: #bbb; }
-.dataset-status.ready { background: var(--success); }
-.dataset-status.recording { background: #d9931a; }
-.dataset-status.incomplete, .dataset-status.unreadable { background: var(--danger); }
-.dataset-workspace { min-width: 0; padding: 16px 0 0 22px; }
+.dataset-management-board { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 18px; }
+.dataset-management-heading { display: flex; align-items: center; gap: 9px; }
+.dataset-management-heading h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.dataset-management-heading span { display: inline-grid; min-width: 22px; height: 22px; place-items: center; border-radius: 999px; background: #ededed; color: #555; font-size: 11px; }
+.dataset-management-table { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.dataset-management-table-head, .dataset-management-table > button { display: grid; grid-template-columns: minmax(220px, 2fr) 90px 100px 100px 105px 100px; align-items: center; gap: 14px; padding: 0 16px; }
+.dataset-management-table-head { min-height: 38px; border-bottom: 1px solid var(--line); background: #fafafa; color: var(--subtle); font-size: 11px; }
+.dataset-management-table > button { position: relative; width: 100%; min-width: 0; min-height: 68px; border: 0; border-bottom: 1px solid var(--line); background: #fff; color: #555; text-align: left; font-size: 12px; }
+.dataset-management-table > button:last-of-type { border-bottom: 0; }
+.dataset-management-table > button:hover:not(:disabled) { background: #f6f6f6; }
+.dataset-management-table > button:disabled { opacity: .58; }
+.dataset-management-table > button > span:first-child { display: grid; min-width: 0; gap: 4px; }
+.dataset-management-table > button strong, .dataset-management-table > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dataset-management-table > button strong { color: #111; font-size: 13px; }
+.dataset-management-table > button small { color: var(--subtle); font-size: 10px; }
+.dataset-management-table > button > span:last-of-type { color: #111; font-weight: 550; text-align: right; }
+.dataset-management-table > button em { grid-column: 1 / -1; margin-top: -9px; color: var(--danger); font-size: 10px; font-style: normal; }
+.dataset-drawer-backdrop { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / 24%); }
+.dataset-drawer { position: fixed; top: 0; right: 0; z-index: 31; display: grid; width: min(860px, calc(100vw - 72px)); height: 100vh; grid-template-rows: auto minmax(0, 1fr); border: 0; border-left: 1px solid var(--line); background: #fff; padding: 0; box-shadow: -14px 0 38px rgb(0 0 0 / 14%); }
+.dataset-drawer-header { display: flex; min-height: 82px; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--line); padding: 16px 22px; }
+.dataset-drawer-header > div { min-width: 0; }
+.dataset-drawer-header span { color: var(--subtle); font-size: 11px; }
+.dataset-drawer-header h2 { overflow: hidden; margin: 5px 0 0; font-size: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.dataset-drawer-header > button { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border: 0; border-radius: 5px; background: transparent; color: #555; font-size: 24px; line-height: 1; }
+.dataset-drawer-header > button:hover { background: #f1f1f1; color: #000; }
+.dataset-drawer-content { min-width: 0; overflow-y: auto; padding: 20px 22px 44px; }
 .dataset-placeholder { display: grid; min-height: 420px; place-items: center; color: var(--subtle); font-size: 13px; }
 .dataset-placeholder.compact { min-height: 180px; }
 .dataset-overview { display: grid; gap: 17px; border-bottom: 1px solid var(--line); padding-bottom: 17px; }
@@ -405,7 +413,8 @@ code { font-family: var(--font-geist-mono), monospace; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-card:nth-child(2) { border-right: 0; }
   .metric-card:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-  .dataset-browser-layout { grid-template-columns: 220px minmax(0, 1fr); }
+  .dataset-management-table-head, .dataset-management-table > button { grid-template-columns: minmax(180px, 2fr) 72px 86px 86px 92px; }
+  .dataset-management-table-head > span:nth-child(4), .dataset-management-table > button > span:nth-child(4) { display: none; }
   .camera-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .trajectory-legend { grid-template-columns: 1fr; }
   .trajectory-legend label { border-right: 0; }
@@ -459,10 +468,17 @@ code { font-family: var(--font-geist-mono), monospace; }
   .task-progress-row { grid-template-columns: 1fr; padding-right: 72px; }
   .task-progress-values { justify-items: start; }
   .trend-chart.days-30 { overflow-x: auto; grid-template-columns: repeat(30, minmax(10px, 1fr)); }
-  .dataset-browser-layout { grid-template-columns: 1fr; }
-  .dataset-library { border-right: 0; border-bottom: 1px solid var(--line); padding-right: 0; padding-bottom: 14px; }
-  .dataset-library-list { max-height: 260px; overflow-y: auto; }
-  .dataset-workspace { padding-left: 0; }
+  .dataset-management-table { border-inline: 0; border-radius: 0; }
+  .dataset-management-table-head { display: none; }
+  .dataset-management-table > button { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 13px 0; }
+  .dataset-management-table > button > span:first-child { grid-column: 1 / -1; }
+  .dataset-management-table > button > span:nth-child(2)::before { content: "Episodes "; color: var(--subtle); }
+  .dataset-management-table > button > span:nth-child(3)::before { content: "时长 "; color: var(--subtle); }
+  .dataset-management-table > button > span:nth-child(4), .dataset-management-table > button > span:nth-child(5) { display: none; }
+  .dataset-management-table > button > span:last-of-type { grid-column: 1 / -1; text-align: left; }
+  .dataset-drawer { width: 100vw; }
+  .dataset-drawer-header { padding-inline: 16px; }
+  .dataset-drawer-content { padding: 16px 16px 36px; }
   .episode-toolbar label { width: 100%; }
   .episode-toolbar > div { justify-content: flex-start; }
   .camera-grid { grid-template-columns: 1fr; }

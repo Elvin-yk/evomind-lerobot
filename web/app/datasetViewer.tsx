@@ -1,6 +1,6 @@
 'use client';
 
-import { Pause, Play, RefreshCw } from 'lucide-react';
+import { Pause, Play } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 type RuntimeEvent = { operation: string; phase: string };
@@ -56,8 +56,9 @@ export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent
   const refreshDatasets = useCallback(async () => {
     try {
       const values = await read<DatasetSummary[]>('/api/datasets');
-      setDatasets(values); setError('');
-      setSelectedId((current) => current || values.find((item) => item.available)?.id || '');
+      const visible = values.filter((item) => item.episodes > 0 && item.frames > 0 && item.duration_s > 0);
+      setDatasets(visible); setError('');
+      setSelectedId((current) => visible.some((item) => item.id === current) ? current : '');
     } catch (refreshError) { setError(refreshError instanceof Error ? refreshError.message : '数据集读取失败'); }
     finally { setLoading(false); }
   }, []);
@@ -85,6 +86,15 @@ export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent
   }, [selectedId]);
 
   useEffect(() => {
+    if (!selectedId) return undefined;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedId('');
+    };
+    document.addEventListener('keydown', close);
+    return () => document.removeEventListener('keydown', close);
+  }, [selectedId]);
+
+  useEffect(() => {
     if (!detail || !detail.episodes.some((item) => item.episode_index === episodeIndex)) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {
@@ -105,46 +115,54 @@ export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent
   return <section className="dataset-page">
     <div className="dataset-toolbar">
       <input value={query} onChange={(item) => setQuery(item.target.value)} placeholder="搜索数据集或任务" aria-label="搜索数据集" />
-      <button className="outline inline-icon" type="button" onClick={() => void refreshDatasets()}><RefreshCw size={15} />刷新</button>
     </div>
     {error && <div className="error compact">{error}</div>}
-    <div className="dataset-browser-layout">
-      <section className="dataset-library">
-        <div className="dataset-library-heading"><span>本地数据</span><strong>{datasets.length}</strong></div>
-        <div className="dataset-library-list">
-          {filtered.map((dataset) => <button className={selectedId === dataset.id ? 'active' : ''} type="button" disabled={!dataset.available} onClick={() => setSelectedId(dataset.id)} key={dataset.id}>
-            <span><strong>{dataset.id}</strong><small>{dataset.tasks[0] || '未记录任务'}</small></span>
-            <span><i className={`dataset-status ${dataset.status}`} />{dataset.status === 'ready' ? `${dataset.episodes} Episodes` : dataset.status === 'recording' ? '采集中' : '不可读取'}</span>
-            {dataset.error && <em>{dataset.error}</em>}
-          </button>)}
-          {!loading && filtered.length === 0 && <div className="empty-state">没有匹配的本地数据集</div>}
-          {loading && <div className="empty-state">正在扫描本地数据</div>}
-        </div>
-      </section>
-
-      <div className="dataset-workspace">
-        {!detail && <div className="dataset-placeholder">选择一个已完成的数据集开始查看</div>}
-        {detail && <>
-          <section className="dataset-overview">
-            <div><span>数据集</span><h2>{detail.id}</h2><p>{detail.tasks.join(' · ') || '未记录任务描述'}</p></div>
-            <div className="dataset-overview-metrics">
-              <Metric label="Episodes" value={countLabel(detail.episodes.length)} />
-              <Metric label="总帧数" value={countLabel(detail.frames)} />
-              <Metric label="有效时长" value={durationLabel(detail.duration_s)} />
-              <Metric label="FPS / 相机" value={`${detail.fps} / ${detail.cameras.length}`} />
-            </div>
-          </section>
-
-          <section className="episode-toolbar">
-            <label>Episode<select value={episodeIndex} onChange={(item) => setEpisodeIndex(Number(item.target.value))}>{detail.episodes.map((item) => <option value={item.episode_index} key={item.episode_index}>Episode {item.episode_index} · {durationLabel(item.duration_s)}</option>)}</select></label>
-            <div>{detail.cameras.map((camera) => <span key={camera.key}>{camera.label}{camera.resolution ? ` · ${camera.resolution}` : ''}</span>)}</div>
-          </section>
-
-          {episodeLoading && <div className="dataset-placeholder compact">正在加载 Episode</div>}
-          {episode && !episodeLoading && <EpisodePlayer key={`${episode.dataset_id}-${episode.episode_index}`} episode={episode} />}
-        </>}
+    <section className="dataset-management-board">
+      <div className="dataset-management-heading"><h2>我的数据</h2><span>{datasets.length}</span></div>
+      <div className="dataset-management-table">
+        <div className="dataset-management-table-head"><span>数据集</span><span>Episodes</span><span>有效时长</span><span>总帧数</span><span>FPS / 相机</span><span /></div>
+        {filtered.map((dataset) => <button type="button" disabled={!dataset.available} onClick={() => { setDetail(null); setEpisode(null); setSelectedId(dataset.id); }} key={dataset.id}>
+          <span><strong>{dataset.id}</strong><small>{dataset.tasks[0] || '未记录任务'}</small></span>
+          <span>{countLabel(dataset.episodes)}</span>
+          <span>{durationLabel(dataset.duration_s)}</span>
+          <span>{countLabel(dataset.frames)}</span>
+          <span>{dataset.fps || '—'} / {dataset.camera_count}</span>
+          <span>{dataset.available ? '数据可视化' : '不可读取'}</span>
+          {dataset.error && <em>{dataset.error}</em>}
+        </button>)}
+        {!loading && filtered.length === 0 && <div className="empty-state">没有匹配的本地数据集</div>}
+        {loading && <div className="empty-state">正在扫描本地数据</div>}
       </div>
-    </div>
+    </section>
+
+    {selectedId && <>
+      <div className="dataset-drawer-backdrop" role="presentation" onClick={() => setSelectedId('')} />
+      <aside className="dataset-drawer" role="dialog" aria-modal="true" aria-label={`${selectedId} 数据可视化`}>
+        <div className="dataset-drawer-header"><div><span>数据可视化</span><h2>{selectedId}</h2></div><button type="button" onClick={() => setSelectedId('')} aria-label="关闭数据可视化">×</button></div>
+        <div className="dataset-drawer-content">
+          {!detail && <div className="dataset-placeholder">正在加载数据集</div>}
+          {detail && <>
+            <section className="dataset-overview">
+              <div><span>任务</span><p>{detail.tasks.join(' · ') || '未记录任务描述'}</p></div>
+              <div className="dataset-overview-metrics">
+                <Metric label="Episodes" value={countLabel(detail.episodes.length)} />
+                <Metric label="总帧数" value={countLabel(detail.frames)} />
+                <Metric label="有效时长" value={durationLabel(detail.duration_s)} />
+                <Metric label="FPS / 相机" value={`${detail.fps} / ${detail.cameras.length}`} />
+              </div>
+            </section>
+
+            <section className="episode-toolbar">
+              <label>Episode<select value={episodeIndex} onChange={(item) => setEpisodeIndex(Number(item.target.value))}>{detail.episodes.map((item) => <option value={item.episode_index} key={item.episode_index}>Episode {item.episode_index} · {durationLabel(item.duration_s)}</option>)}</select></label>
+              <div>{detail.cameras.map((camera) => <span key={camera.key}>{camera.label}{camera.resolution ? ` · ${camera.resolution}` : ''}</span>)}</div>
+            </section>
+
+            {episodeLoading && <div className="dataset-placeholder compact">正在加载 Episode</div>}
+            {episode && !episodeLoading && <EpisodePlayer key={`${episode.dataset_id}-${episode.episode_index}`} episode={episode} />}
+          </>}
+        </div>
+      </aside>
+    </>}
   </section>;
 }
 
