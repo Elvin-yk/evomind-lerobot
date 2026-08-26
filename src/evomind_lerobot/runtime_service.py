@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import re
 import signal
 import sqlite3
 import threading
@@ -33,7 +34,6 @@ class RecordingStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str = Field(min_length=1)
-    dataset_name: str = Field(min_length=1, max_length=80)
     fps: int = Field(default=30, ge=1, le=60)
     num_episodes: int = Field(default=20, ge=1, le=10_000)
     episode_time_s: int = Field(default=30, ge=1, le=86_400)
@@ -114,6 +114,13 @@ def _repo_id(value: str) -> str:
     if not repo_id:
         raise ValueError("数据集 repo id 不能为空")
     return repo_id
+
+
+def _recording_dataset_name(task: dict[str, Any]) -> str:
+    """Build a readable, filesystem-safe dataset name from the selected daily task."""
+    name = re.sub(r"[^\w.-]+", "-", str(task["name"]).strip(), flags=re.UNICODE).strip("-._")
+    task_prefix = str(task["id"]).split("-", 1)[0]
+    return f"{name[:48] or 'recording'}_{task_prefix}"
 
 
 def _camera_config(port: str, fps: int) -> dict[str, Any]:
@@ -241,6 +248,7 @@ def _execute_recording(payload: dict[str, Any]) -> None:
     from lerobot.scripts.lerobot_record import RecordConfig, record
 
     task_description = str(payload.pop("_task_description"))
+    dataset_name = str(payload.pop("_dataset_name"))
     request = RecordingStartRequest.model_validate(payload)
     robot, teleop = _decode_hardware(_configuration(), request.fps)
     if teleop is None:
@@ -250,7 +258,7 @@ def _execute_recording(payload: dict[str, Any]) -> None:
             robot=robot,
             teleop=teleop,
             dataset=DatasetRecordConfig(
-                repo_id=_repo_id(request.dataset_name),
+                repo_id=_repo_id(dataset_name),
                 single_task=task_description,
                 fps=request.fps,
                 num_episodes=request.num_episodes,
@@ -404,10 +412,11 @@ class RuntimeService:
                 raise RuntimeError("采集进度账本未初始化")
             task = self._collection_store.require_today_task(request.task_id)
             payload["_task_description"] = task["description"]
+            payload["_dataset_name"] = _recording_dataset_name(task)
         job = self._jobs.acquire(operation, f"正在启动 {operation.value}")
         if operation is Operation.RECORDING:
             try:
-                self._collection_store.start_session(job.id, request.task_id, request)
+                self._collection_store.start_session(job.id, request.task_id, payload["_dataset_name"], request)
             except Exception:
                 self._jobs.release(job.id, failed=True, message="采集任务启动失败")
                 raise

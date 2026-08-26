@@ -92,7 +92,7 @@ export function StorageNotice({ initial, refreshKey = null }: { initial: Storage
   </div>;
 }
 
-export function CollectionProgressPage({ storage, runtimeEvent }: { storage: StorageInfo | null; runtimeEvent: RuntimeEvent | null }) {
+export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent | null }) {
   const today = shanghaiDate();
   const [selectedDate, setSelectedDate] = useState(today);
   const [windowDays, setWindowDays] = useState<7 | 30>(7);
@@ -170,7 +170,6 @@ export function CollectionProgressPage({ storage, runtimeEvent }: { storage: Sto
       </div>
     </div>
 
-    <StorageNotice initial={storage} refreshKey={runtimeEvent?.data.stage === 'episode_saved' ? runtimeEvent.sequence ?? String(runtimeEvent.data.episode_index) : null} />
     {error && <div className="error compact">{error}</div>}
 
     <div className="metric-grid">

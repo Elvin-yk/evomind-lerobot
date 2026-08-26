@@ -253,7 +253,7 @@ class CollectionStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM daily_tasks WHERE id = ?", (task_id,))
 
-    def start_session(self, session_id: str, task_id: str, request: Any) -> None:
+    def start_session(self, session_id: str, task_id: str, dataset_name: str, request: Any) -> None:
         self.require_today_task(task_id)
         with self._connect() as connection:
             connection.execute(
@@ -266,7 +266,7 @@ class CollectionStore:
                 (
                     session_id,
                     task_id,
-                    request.dataset_name,
+                    dataset_name,
                     request.fps,
                     request.num_episodes,
                     request.episode_time_s,
