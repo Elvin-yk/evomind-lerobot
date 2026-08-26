@@ -320,10 +320,15 @@ def _execute_replay(payload: dict[str, Any]) -> None:
 
     request = ReplayStartRequest.model_validate(payload)
     dataset = _dataset(request.dataset_id)
+    configuration = _configuration()
+    if dataset.get("robot_type") and dataset["robot_type"] != configuration.robot_type:
+        raise ValueError(
+            f"数据集设备类型 {dataset['robot_type']} 与当前设备 {configuration.robot_type} 不一致"
+        )
     if request.episode >= dataset["episodes"]:
         raise ValueError("Episode 超出数据集范围")
     robot, _ = _decode_hardware(
-        _configuration(),
+        configuration,
         dataset["fps"],
         cameras=False,
         include_teleoperator=False,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -108,6 +109,7 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
         active = dataset_id == active_dataset_id
         try:
             info = json.loads((root / "meta/info.json").read_text(encoding="utf-8"))
+            info_path = root / "meta/info.json"
             fps = int(info["fps"])
             frames = int(info["total_frames"])
             episodes = int(info["total_episodes"])
@@ -139,6 +141,8 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
                     "fps": fps,
                     "duration_s": frames / fps if fps else 0,
                     "tasks": tasks,
+                    "robot_type": str(info.get("robot_type") or ""),
+                    "recorded_on": datetime.fromtimestamp(info_path.stat().st_mtime).astimezone().date().isoformat(),
                     "camera_count": len(camera_keys),
                     "status": status,
                     "available": status == "ready",
@@ -155,6 +159,8 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
                     "fps": 0,
                     "duration_s": 0,
                     "tasks": [],
+                    "robot_type": "",
+                    "recorded_on": "",
                     "camera_count": 0,
                     "status": "unreadable",
                     "available": False,

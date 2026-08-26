@@ -21,6 +21,11 @@ def _datasets() -> list[dict[str, Any]]:
     info_paths = set(root.glob("*/meta/info.json")) | set(root.glob("*/*/meta/info.json"))
     for info_path in sorted(info_paths):
         info = _read_json(info_path)
+        episodes = int(info["total_episodes"])
+        frames = int(info["total_frames"])
+        fps = int(info["fps"])
+        if episodes <= 0 or frames <= 0 or fps <= 0:
+            continue
         dataset_root = info_path.parents[1]
         relative = dataset_root.relative_to(root)
         if relative.parts[0] in {"calibration", "hub", "policies"}:
@@ -29,10 +34,11 @@ def _datasets() -> list[dict[str, Any]]:
             {
                 "id": str(relative),
                 "path": str(dataset_root),
-                "episodes": int(info["total_episodes"]),
-                "frames": int(info["total_frames"]),
-                "fps": int(info["fps"]),
+                "episodes": episodes,
+                "frames": frames,
+                "fps": fps,
                 "tasks": int(info["total_tasks"]),
+                "robot_type": str(info.get("robot_type") or ""),
             }
         )
     return datasets

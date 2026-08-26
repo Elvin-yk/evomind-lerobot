@@ -29,7 +29,7 @@ type HardwareInventory = { serial: SerialDevice[]; cameras: CameraDevice[] };
 type Side = 'single' | 'left' | 'right';
 type SerialKind = 'robot' | 'teleoperator';
 type IdentificationScope = 'hardware' | 'sensors' | 'all';
-type PageId = 'device' | 'maintenance' | 'calibration' | 'teleoperation' | 'recording' | 'collection-progress' | 'datasets' | 'inference' | 'replay';
+type PageId = 'device' | 'maintenance' | 'calibration' | 'teleoperation' | 'recording' | 'collection-progress' | 'datasets' | 'inference';
 type SerialBinding = {
   id: string; port: string; alias: string; kind: SerialKind; side: Side;
 };
@@ -65,9 +65,8 @@ const menu: { id: PageId; label: string }[] = [
   { id: 'teleoperation', label: '遥操作' },
   { id: 'recording', label: '数据采集' },
   { id: 'collection-progress', label: '采集进度' },
-  { id: 'datasets', label: '数据查看' },
+  { id: 'datasets', label: '数据管理' },
   { id: 'inference', label: '推理' },
-  { id: 'replay', label: '回放' },
 ];
 
 function serialIdentity(stableId: string) {
@@ -359,7 +358,7 @@ export default function Home() {
       <div className="runtime"><i />{!collapsed && <div><strong>{status ? '运行正常' : '正在连接'}</strong><span>LeRobot {status?.lerobot_version ?? '—'}</span></div>}</div>
     </aside>
     <main>
-      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{(['teleoperation', 'recording', 'inference', 'replay'] as PageId[]).includes(activePage) ? <div className="header-workflow-status" ref={setWorkflowStatusSlot} /> : activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <span>⌄</span></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
+      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{(['teleoperation', 'recording', 'datasets', 'inference'] as PageId[]).includes(activePage) ? <div className="header-workflow-status" ref={setWorkflowStatusSlot} /> : activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <span>⌄</span></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
       {error && <div className="error">{error}</div>}
       {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={serialSlots(savedProfile)} cameras={cameras} mode={mode} showHardware={identificationScope !== 'sensors'} showSensors={identificationScope !== 'hardware'} serialAssignments={serialAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
         <div className="device-setup-steps">{createSteps.map((item, index) => {
@@ -378,9 +377,8 @@ export default function Home() {
       {activePage === 'teleoperation' && saved && <WorkflowPage kind="teleoperation" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
       {activePage === 'recording' && saved && <WorkflowPage kind="recording" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
       {activePage === 'collection-progress' && saved && <CollectionProgressPage runtimeEvent={runtimeEvent} />}
-      {activePage === 'datasets' && saved && <DatasetViewerPage runtimeEvent={runtimeEvent} />}
+      {activePage === 'datasets' && saved && <DatasetViewerPage runtimeEvent={runtimeEvent} robotType={saved.robot_type} statusSlot={workflowStatusSlot} />}
       {activePage === 'inference' && saved && <WorkflowPage kind="inference" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
-      {activePage === 'replay' && saved && <WorkflowPage kind="replay" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
     </main>
   </div>;
 }

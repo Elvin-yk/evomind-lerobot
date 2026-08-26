@@ -2,12 +2,17 @@
 
 import { Pause, Play } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
-type RuntimeEvent = { operation: string; phase: string };
+type RuntimeEvent = {
+  sequence: number; operation: string; phase: string; message: string;
+  data: Record<string, unknown>; timestamp: string;
+};
+type WorkflowRuntime = { running: boolean; operation: string | null; event: RuntimeEvent | null };
 type DatasetSummary = {
   id: string; path: string; episodes: number; frames: number; fps: number; duration_s: number;
   tasks: string[]; camera_count: number; status: 'ready' | 'recording' | 'incomplete' | 'unreadable';
-  available: boolean; error: string;
+  robot_type: string; recorded_on: string; available: boolean; error: string;
 };
 type DatasetDetail = {
   id: string; robot_type: string | null; fps: number; frames: number; duration_s: number; tasks: string[];
@@ -32,6 +37,15 @@ async function read<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function post<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: string };
+    throw new Error(payload.detail || '操作失败');
+  }
+  return response.json() as Promise<T>;
+}
+
 function durationLabel(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.round(seconds % 60);
@@ -42,16 +56,20 @@ function countLabel(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value);
 }
 
-export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent | null }) {
+export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { runtimeEvent: RuntimeEvent | null; robotType: string; statusSlot: HTMLDivElement | null }) {
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [detail, setDetail] = useState<DatasetDetail | null>(null);
   const [episodeIndex, setEpisodeIndex] = useState(0);
   const [episode, setEpisode] = useState<EpisodePayload | null>(null);
   const [query, setQuery] = useState('');
+  const [taskFilter, setTaskFilter] = useState('');
+  const [dateFilter, setDateFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [episodeLoading, setEpisodeLoading] = useState(false);
   const [error, setError] = useState('');
+  const [runtime, setRuntime] = useState<WorkflowRuntime>({ running: false, operation: null, event: null });
+  const [replayPending, setReplayPending] = useState(false);
 
   const refreshDatasets = useCallback(async () => {
     try {
@@ -67,6 +85,12 @@ export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent
     const timer = window.setTimeout(() => void refreshDatasets(), 0);
     return () => window.clearTimeout(timer);
   }, [refreshDatasets]);
+  useEffect(() => {
+    const refresh = () => read<WorkflowRuntime>('/api/runtime/status').then(setRuntime).catch(() => undefined);
+    void refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     if (runtimeEvent?.operation !== 'recording' || !['completed', 'failed'].includes(runtimeEvent.phase)) return undefined;
     const timer = window.setTimeout(() => void refreshDatasets(), 0);
@@ -107,29 +131,71 @@ export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [detail, episodeIndex]);
 
+  const taskOptions = Array.from(new Set(datasets.flatMap((dataset) => dataset.tasks))).sort((left, right) => left.localeCompare(right, 'zh-CN'));
   const filtered = datasets.filter((dataset) => {
     const text = `${dataset.id} ${dataset.tasks.join(' ')}`.toLowerCase();
-    return text.includes(query.trim().toLowerCase());
+    return text.includes(query.trim().toLowerCase())
+      && (!taskFilter || dataset.tasks.includes(taskFilter))
+      && (!dateFilter || dataset.recorded_on === dateFilter);
   });
 
+  const replayEvent = runtimeEvent?.operation === 'replay' ? runtimeEvent : runtime.event?.operation === 'replay' ? runtime.event : null;
+  const replaying = runtime.running && runtime.operation === 'replay';
+  const runningOther = runtime.running && runtime.operation !== 'replay';
+  const activeReplayId = String(replayEvent?.data.repo_id ?? '');
+
+  async function startReplay(datasetId: string, selectedEpisode = 0) {
+    setReplayPending(true); setError('');
+    try { setRuntime(await post<WorkflowRuntime>('/api/runtime/replay/start', { dataset_id: datasetId, episode: selectedEpisode })); }
+    catch (replayError) { setError(replayError instanceof Error ? replayError.message : '回放启动失败'); }
+    finally { setReplayPending(false); }
+  }
+
+  async function stopReplay() {
+    setReplayPending(true); setError('');
+    try { setRuntime(await post<WorkflowRuntime>('/api/runtime/command', { command: 'stop' })); }
+    catch (replayError) { setError(replayError instanceof Error ? replayError.message : '回放停止失败'); }
+    finally { setReplayPending(false); }
+  }
+
+  const replayState = replayEvent?.message || '等待开始';
+  const replayDetail = replayEvent?.data.frame !== undefined
+    ? `${String(replayEvent.data.frame)} / ${String(replayEvent.data.total_frames ?? '—')} 帧`
+    : replayEvent ? `${replayEvent.phase} · ${new Date(replayEvent.timestamp).toLocaleTimeString()}` : '尚未启动';
+
   return <section className="dataset-page">
-    <div className="dataset-toolbar">
-      <input value={query} onChange={(item) => setQuery(item.target.value)} placeholder="搜索数据集或任务" aria-label="搜索数据集" />
-    </div>
+    {statusSlot && createPortal(<div className="workflow-summary"><div><span>回放状态</span><strong>{replayState}</strong><p>{replayDetail}</p></div></div>, statusSlot)}
+    <section className="dataset-filter-bar">
+      <div className="dataset-filter-heading"><div><strong>筛选条件</strong><span>按数据集、任务和采集日期查找</span></div>{(query || taskFilter || dateFilter) && <button type="button" onClick={() => { setQuery(''); setTaskFilter(''); setDateFilter(''); }}>清除筛选</button>}</div>
+      <div className="dataset-filter-fields">
+        <label>数据集<input value={query} onChange={(item) => setQuery(item.target.value)} placeholder="搜索数据集名称" aria-label="搜索数据集" /></label>
+        <label>任务<select value={taskFilter} onChange={(item) => setTaskFilter(item.target.value)}><option value="">全部任务</option>{taskOptions.map((task) => <option value={task} key={task}>{task}</option>)}</select></label>
+        <label>采集日期<input type="date" value={dateFilter} onChange={(item) => setDateFilter(item.target.value)} /></label>
+      </div>
+    </section>
     {error && <div className="error compact">{error}</div>}
     <section className="dataset-management-board">
-      <div className="dataset-management-heading"><h2>我的数据</h2><span>{datasets.length}</span></div>
+      <div className="dataset-management-heading"><h2>我的数据</h2><span>{filtered.length}</span></div>
       <div className="dataset-management-table">
-        <div className="dataset-management-table-head"><span>数据集</span><span>Episodes</span><span>有效时长</span><span>总帧数</span><span>FPS / 相机</span><span /></div>
-        {filtered.map((dataset) => <button type="button" disabled={!dataset.available} onClick={() => { setDetail(null); setEpisode(null); setSelectedId(dataset.id); }} key={dataset.id}>
-          <span><strong>{dataset.id}</strong><small>{dataset.tasks[0] || '未记录任务'}</small></span>
-          <span>{countLabel(dataset.episodes)}</span>
-          <span>{durationLabel(dataset.duration_s)}</span>
-          <span>{countLabel(dataset.frames)}</span>
-          <span>{dataset.fps || '—'} / {dataset.camera_count}</span>
-          <span>{dataset.available ? '数据可视化' : '不可读取'}</span>
-          {dataset.error && <em>{dataset.error}</em>}
-        </button>)}
+        <div className="dataset-management-table-head"><span>数据集</span><span>Episodes</span><span>有效时长</span><span>总帧数</span><span>FPS / 相机</span><span>操作</span></div>
+        {filtered.map((dataset) => {
+          const compatible = Boolean(dataset.robot_type) && dataset.robot_type === robotType;
+          const activeReplay = replaying && activeReplayId === dataset.id;
+          const replayDisabled = replayPending || runningOther || (replaying && !activeReplay) || !compatible;
+          const openDataset = () => { setDetail(null); setEpisode(null); setSelectedId(dataset.id); };
+          return <div className="dataset-management-row" role="button" tabIndex={0} onClick={openDataset} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDataset(); } }} key={dataset.id}>
+            <span><strong>{dataset.id}</strong><small>{dataset.tasks[0] || '未记录任务'} · {dataset.recorded_on || '日期未知'}</small></span>
+            <span>{countLabel(dataset.episodes)}</span>
+            <span>{durationLabel(dataset.duration_s)}</span>
+            <span>{countLabel(dataset.frames)}</span>
+            <span>{dataset.fps || '—'} / {dataset.camera_count}</span>
+            <span className="dataset-row-actions" onClick={(event) => event.stopPropagation()}>
+              <button className="outline" type="button" onClick={openDataset}>可视化</button>
+              <button className={activeReplay ? 'danger' : 'outline'} type="button" disabled={replayDisabled} title={compatible ? undefined : `仅支持 ${robotType} 数据`} onClick={() => activeReplay ? void stopReplay() : void startReplay(dataset.id)}>{activeReplay ? '停止' : compatible ? '回放' : '不兼容'}</button>
+            </span>
+            {dataset.error && <em>{dataset.error}</em>}
+          </div>;
+        })}
         {!loading && filtered.length === 0 && <div className="empty-state">没有匹配的本地数据集</div>}
         {loading && <div className="empty-state">正在扫描本地数据</div>}
       </div>
@@ -154,7 +220,8 @@ export function DatasetViewerPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent
 
             <section className="episode-toolbar">
               <label>Episode<select value={episodeIndex} onChange={(item) => setEpisodeIndex(Number(item.target.value))}>{detail.episodes.map((item) => <option value={item.episode_index} key={item.episode_index}>Episode {item.episode_index} · {durationLabel(item.duration_s)}</option>)}</select></label>
-              <div>{detail.cameras.map((camera) => <span key={camera.key}>{camera.label}{camera.resolution ? ` · ${camera.resolution}` : ''}</span>)}</div>
+              <div className="episode-toolbar-meta">{detail.cameras.map((camera) => <span key={camera.key}>{camera.label}{camera.resolution ? ` · ${camera.resolution}` : ''}</span>)}</div>
+              <div className="episode-toolbar-actions"><button className={replaying && activeReplayId === detail.id ? 'danger' : 'primary'} type="button" disabled={replayPending || runningOther || (replaying && activeReplayId !== detail.id) || detail.robot_type !== robotType} onClick={() => replaying && activeReplayId === detail.id ? void stopReplay() : void startReplay(detail.id, episodeIndex)}>{replaying && activeReplayId === detail.id ? '停止回放' : detail.robot_type === robotType ? '回放此 Episode' : '设备类型不兼容'}</button></div>
             </section>
 
             {episodeLoading && <div className="dataset-placeholder compact">正在加载 Episode</div>}
