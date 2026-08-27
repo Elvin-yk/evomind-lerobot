@@ -204,11 +204,12 @@ code { font-family: var(--font-geist-mono), monospace; }
 .piper-summary strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .piper-bulk-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .piper-motor-list { display: grid; }
-.piper-motor-row { display: grid; min-width: 760px; min-height: 68px; grid-template-columns: 120px minmax(340px, 1fr) minmax(150px, .7fr) 94px; align-items: center; gap: 16px; border-bottom: 1px solid var(--line); }
+.piper-motor-row { display: grid; min-width: 1080px; min-height: 72px; grid-template-columns: 100px minmax(300px, 1.1fr) minmax(290px, 1fr) minmax(140px, .6fr) 94px; align-items: center; gap: 16px; border-bottom: 1px solid var(--line); }
 .piper-motor-row > div:first-child { display: grid; gap: 4px; }
 .piper-motor-row > div:first-child strong { font-size: 13px; }
 .piper-motor-row > div:first-child span { font: 12px var(--font-geist-mono), monospace; }
 .piper-telemetry { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; color: var(--muted); font-size: 11px; }
+.piper-position-control { grid-template-columns: 28px minmax(180px, 1fr) 28px 58px; }
 .piper-faults { color: var(--success); font-size: 11px; }
 .piper-faults.failed { color: var(--danger); }
 .piper-motor-list { overflow-x: auto; }

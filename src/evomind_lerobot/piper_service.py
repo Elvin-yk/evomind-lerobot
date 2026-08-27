@@ -18,6 +18,15 @@ PIPER_DEVICE_TYPES = {
     "bi_piperx_follower",
     "bi_piperx_leader",
 }
+PIPER_JOINT_LIMITS = {
+    1: (-150.0, 150.0),
+    2: (0.0, 180.0),
+    3: (-170.0, 0.0),
+    4: (-100.0, 100.0),
+    5: (-70.0, 70.0),
+    6: (-120.0, 120.0),
+}
+MAX_MAINTENANCE_STEP_DEGREES = 5.0
 
 
 class PiperScanRequest(BaseModel):
@@ -25,14 +34,21 @@ class PiperScanRequest(BaseModel):
 
 
 class PiperActionRequest(PiperScanRequest):
-    action: Literal["enable", "disable"]
+    action: Literal["enable", "disable", "move"]
     motor_id: int = Field(default=7, ge=1, le=7)
+    value: float | None = None
     confirmed: bool = False
 
     @model_validator(mode="after")
     def validate_action(self) -> PiperActionRequest:
-        if self.action == "enable" and not self.confirmed:
-            raise ValueError("Enabling a PiperX joint requires confirmation")
+        if self.action in {"enable", "move"} and not self.confirmed:
+            raise ValueError("This PiperX action requires confirmation")
+        if self.action == "move":
+            if self.motor_id not in PIPER_JOINT_LIMITS or self.value is None:
+                raise ValueError("Joint movement requires a joint number and target angle")
+            minimum, maximum = PIPER_JOINT_LIMITS[self.motor_id]
+            if not minimum <= self.value <= maximum:
+                raise ValueError("Joint target exceeds the PiperX limit")
         return self
 
 
@@ -209,8 +225,24 @@ class PiperMaintenanceSession:
     def action(self, request: PiperActionRequest) -> dict[str, Any]:
         if request.action == "enable":
             self.arm.EnableArm(request.motor_id)
-        else:
+        elif request.action == "disable":
             self.arm.DisableArm(request.motor_id)
+        else:
+            current = self.snapshot()
+            if current["feedback_source"] != "feedback":
+                raise ValueError("只有收到从臂状态反馈时才能调整关节")
+            if not all(motor["enabled"] for motor in current["motors"]):
+                raise ValueError("调整关节前需要使能全部关节")
+            positions = [motor["position"] for motor in current["motors"]]
+            if any(position is None for position in positions):
+                raise ValueError("未收到完整的关节位置")
+            target = float(request.value)
+            current_position = float(positions[request.motor_id - 1])
+            if abs(target - current_position) > MAX_MAINTENANCE_STEP_DEGREES:
+                raise ValueError("单次关节调整不能超过 5°")
+            positions[request.motor_id - 1] = target
+            self.arm.ModeCtrl(0x01, 0x01, 10, 0x00)
+            self.arm.JointCtrl(*(round(float(position) * 1000) for position in positions))
         time.sleep(0.15)
         return self.snapshot()
 

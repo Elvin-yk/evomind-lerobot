@@ -454,6 +454,7 @@ function RepairPanel({ saved }: { saved: DeviceConfiguration }) {
 
 const piperControlModes: Record<number, string> = { 0: '待机', 1: 'CAN 控制', 2: '示教', 3: '以太网控制', 4: 'Wi-Fi 控制', 5: '遥控器控制', 6: '联动示教', 7: '离线轨迹' };
 const piperArmStatuses: Record<number, string> = { 0: '正常', 1: '急停', 2: '无解', 3: '奇异点', 4: '目标超限', 5: '关节通信异常', 6: '抱闸未打开', 7: '碰撞保护', 8: '拖动超速', 9: '关节状态异常', 10: '其他异常', 14: '主控过温', 15: '释放电阻过温' };
+const piperJointLimits: Record<number, [number, number]> = { 1: [-150, 150], 2: [0, 180], 3: [-170, 0], 4: [-100, 100], 5: [-70, 70], 6: [-120, 120] };
 
 function piperCanLabel(device: CanDevice) {
   return `${device.interface} · ${device.serial_number || device.id}`;
@@ -464,6 +465,8 @@ function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
   const [deviceId, setDeviceId] = useState(saved.can_bindings[0]?.id ?? '');
   const [snapshot, setSnapshot] = useState<PiperSnapshot | null>(null);
   const [history, setHistory] = useState<PositionSample[]>([]);
+  const [targets, setTargets] = useState<Record<number, number>>({});
+  const [draggingId, setDraggingId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [actingId, setActingId] = useState<number | null>(null);
   const [controlArmed, setControlArmed] = useState(false);
@@ -495,7 +498,8 @@ function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
     try {
       const result = await postJson<PiperSnapshot>('/api/maintenance/piper/scan', { device_id: deviceId });
       setSnapshot(result);
-      setHistory([{ capturedAt: Date.now(), positions: Object.fromEntries(result.motors.flatMap((motor) => motor.position === null ? [] : [[motor.id, motor.position]])) }]);
+      const positions = Object.fromEntries(result.motors.flatMap((motor) => motor.position === null ? [] : [[motor.id, motor.position]]));
+      setTargets(positions); setHistory([{ capturedAt: Date.now(), positions }]);
     } catch (scanError) { setError(scanError instanceof Error ? scanError.message : 'PiperX 读取失败'); }
     finally { setBusy(false); }
   }
@@ -509,6 +513,7 @@ function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
         if (cancelled) return;
         setSnapshot(result); setLiveError(null);
         const positions = Object.fromEntries(result.motors.flatMap((motor) => motor.position === null ? [] : [[motor.id, motor.position]]));
+        setTargets((current) => Object.fromEntries(result.motors.map((motor) => [motor.id, motor.id === draggingId ? current[motor.id] ?? motor.position ?? 0 : motor.position ?? current[motor.id] ?? 0])));
         setHistory((current) => [...current, { capturedAt: Date.now(), positions }].slice(-60));
         timer = window.setTimeout(poll, 300);
       } catch (pollError) {
@@ -519,18 +524,18 @@ function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
     };
     timer = window.setTimeout(poll, 300);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [scannedDeviceId]);
+  }, [draggingId, scannedDeviceId]);
 
   function armControl() {
     if (controlArmed) return setControlArmed(false);
     if (window.confirm('启用控制后可以使能 PiperX 关节。请扶稳机械臂并确认周围安全。')) setControlArmed(true);
   }
 
-  async function action(motorId: number, actionName: 'enable' | 'disable') {
-    if (!snapshot || (actionName === 'enable' && !controlArmed)) return;
+  async function action(motorId: number, actionName: 'enable' | 'disable' | 'move', value?: number) {
+    if (!snapshot || (actionName !== 'disable' && !controlArmed)) return;
     setActingId(motorId); setError(null);
     try {
-      const result = await postJson<PiperSnapshot>('/api/maintenance/piper/action', { device_id: snapshot.device_id, motor_id: motorId, action: actionName, confirmed: actionName === 'enable' });
+      const result = await postJson<PiperSnapshot>('/api/maintenance/piper/action', { device_id: snapshot.device_id, motor_id: motorId, action: actionName, value, confirmed: actionName !== 'disable' });
       setSnapshot(result);
     } catch (actionError) { setError(actionError instanceof Error ? actionError.message : 'PiperX 操作失败'); }
     finally { setActingId(null); }
@@ -557,12 +562,15 @@ function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
       {!available && <p className="empty">这个接口已连接，但暂未收到关节反馈。主臂静止时可能只在移动后产生控制反馈。</p>}
       <PiperPositionChart motors={snapshot.motors} history={history} />
       <div className="piper-bulk-actions"><button className="outline" type="button" onClick={() => void action(7, 'disable')} disabled={actingId !== null}>全部失能</button><button className="primary" type="button" onClick={() => void action(7, 'enable')} disabled={!controlArmed || actingId !== null}>全部使能</button></div>
-      <div className="piper-motor-list">{snapshot.motors.map((motor) => <div className="piper-motor-row" key={motor.id}>
+      <div className="piper-motor-list">{snapshot.motors.map((motor) => {
+        const [minimum, maximum] = piperJointLimits[motor.id]; const target = targets[motor.id] ?? motor.position ?? 0;
+        return <div className="piper-motor-row" key={motor.id}>
         <div><strong>关节 {motor.id}</strong><span>{motor.position === null ? '—' : `${motor.position.toFixed(2)}°`}</span></div>
+        <div className="position-control piper-position-control"><span>{minimum}</span><input type="range" min={minimum} max={maximum} step="0.1" value={target} disabled={!controlArmed || !motor.enabled || snapshot.feedback_source !== 'feedback' || actingId !== null} onPointerDown={() => setDraggingId(motor.id)} onChange={(event) => setTargets((current) => ({ ...current, [motor.id]: Number(event.target.value) }))} onPointerUp={(event) => { setDraggingId(null); void action(motor.id, 'move', Number(event.currentTarget.value)); }} onKeyUp={(event) => { if (event.key === 'Enter') void action(motor.id, 'move', Number(event.currentTarget.value)); }} /><span>{maximum}</span><output>{target.toFixed(1)}°</output></div>
         <div className="piper-telemetry"><span>{motor.voltage.toFixed(1)} V</span><span>{motor.current.toFixed(2)} A</span><span>驱动 {motor.driver_temperature} °C</span><span>电机 {motor.motor_temperature} °C</span></div>
         <div className={`piper-faults ${motor.faults.length ? 'failed' : ''}`}>{motor.faults.length ? motor.faults.join(' · ') : '状态正常'}</div>
         <button className={`torque-button ${motor.enabled ? 'enabled' : ''}`} type="button" disabled={actingId !== null || (!controlArmed && !motor.enabled)} onClick={() => void action(motor.id, motor.enabled ? 'disable' : 'enable')}>{actingId === motor.id ? '处理中' : motor.enabled ? '已使能' : '使能'}</button>
-      </div>)}</div>
+      </div>;})}</div>
     </div>}
   </section>;
 }
