@@ -297,7 +297,7 @@ class PiperMotionDetector:
         )
         self.last_positions: dict[str, dict[int, int]] = {}
 
-    def start(self, timeout_s: float = 2.0) -> None:
+    def start(self, timeout_s: float = 0.4) -> None:
         self.arm.ConnectPort(can_init=True, piper_init=False)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -306,7 +306,10 @@ class PiperMotionDetector:
                 self.last_positions = positions
                 return
             time.sleep(0.02)
-        raise RuntimeError("未能读取 PiperX 关节反馈")
+
+        # Some PiperX roles remain silent on CAN while stationary. Keep the
+        # passive listener eligible so later movement can identify the arm.
+        self.last_positions = {}
 
     def _read_positions(self) -> dict[str, dict[int, int]]:
         feedback = self.arm.GetArmJointMsgs()
@@ -332,8 +335,8 @@ class PiperMotionDetector:
             ),
             default=0,
         )
-        if current:
-            self.last_positions = current
+        for source, positions in current.items():
+            self.last_positions[source] = positions
         return {"delta": delta, "moved": delta > PIPER_MOTION_THRESHOLD}
 
     def stop(self) -> None:
