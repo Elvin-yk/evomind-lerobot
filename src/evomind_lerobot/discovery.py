@@ -105,7 +105,19 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
     cameras: dict[str, dict[str, Any]] = {}
     for video in video_devices:
         device_path = (Path("/sys/class/video4linux") / video["id"] / "device").resolve()
-        key = str(device_path)
+        # A single physical camera may expose video nodes from several USB
+        # interfaces (for example, RealSense depth and RGB endpoints). Group
+        # those interfaces by their nearest USB device parent instead of
+        # presenting them as separate cameras.
+        usb_device = next(
+            (
+                candidate
+                for candidate in (device_path, *device_path.parents)
+                if (candidate / "idVendor").exists() and (candidate / "idProduct").exists()
+            ),
+            device_path,
+        )
+        key = str(usb_device)
         resolved_video = str(Path(video["path"]).resolve())
         stable_path = by_id.get(resolved_video) or by_path.get(resolved_video) or video["path"]
         camera = cameras.setdefault(
