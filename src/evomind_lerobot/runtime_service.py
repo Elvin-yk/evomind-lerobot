@@ -36,10 +36,13 @@ class RecordingStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str = Field(min_length=1)
-    fps: int = Field(default=30, ge=1, le=60)
-    num_episodes: int = Field(default=20, ge=1, le=10_000)
-    episode_time_s: int = Field(default=30, ge=1, le=86_400)
-    reset_time_s: int = Field(default=10, ge=0, le=86_400)
+
+
+class RecordingExecutionRequest(RecordingStartRequest):
+    fps: int = Field(ge=1, le=60)
+    num_episodes: int = Field(ge=1, le=10_000)
+    episode_time_s: int = Field(ge=1, le=86_400)
+    reset_time_s: int = Field(ge=0, le=86_400)
 
 
 class RolloutStartRequest(BaseModel):
@@ -265,7 +268,7 @@ def _execute_recording(payload: dict[str, Any]) -> None:
 
     task_description = str(payload.pop("_task_description"))
     dataset_name = str(payload.pop("_dataset_name"))
-    request = RecordingStartRequest.model_validate(payload)
+    request = RecordingExecutionRequest.model_validate(payload)
     robot, teleop = _decode_hardware(_configuration(), request.fps)
     if teleop is None:
         raise ValueError("当前设备没有遥操作设备")
@@ -432,13 +435,26 @@ class RuntimeService:
             if self._collection_store is None or not isinstance(request, RecordingStartRequest):
                 raise RuntimeError("采集进度账本未初始化")
             task = self._collection_store.require_today_task(request.task_id)
+            payload.update(
+                {
+                    "fps": task["fps"],
+                    "num_episodes": task["num_episodes"],
+                    "episode_time_s": task["episode_time_s"],
+                    "reset_time_s": task["reset_time_s"],
+                }
+            )
             payload["_task_description"] = task["description"]
             payload["_dataset_name"] = _recording_dataset_name(task)
         job = self._jobs.acquire(operation, f"正在启动 {operation.value}")
         if operation is Operation.RECORDING:
             try:
                 self._collection_store.start_session(
-                    job.id, request.task_id, payload["_dataset_name"], request
+                    job.id,
+                    request.task_id,
+                    payload["_dataset_name"],
+                    RecordingExecutionRequest.model_validate(
+                        {key: value for key, value in payload.items() if not key.startswith("_")}
+                    ),
                 )
             except Exception:
                 self._jobs.release(job.id, failed=True, message="采集任务启动失败")

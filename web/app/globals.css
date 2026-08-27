@@ -343,6 +343,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .task-progress-values { display: grid; justify-items: end; gap: 4px; }
 .task-progress-values strong { font-size: 13px; }
 .task-progress-values span { color: var(--subtle); font-size: 11px; }
+.task-progress-values small { color: var(--subtle); font-size: 10px; }
 .progress-track { overflow: hidden; height: 5px; grid-column: 1 / -1; border-radius: 999px; background: #ececec; }
 .progress-track i { display: block; height: 100%; border-radius: inherit; background: #111; }
 .task-row-actions { position: absolute; top: 15px; right: 0; display: flex; align-items: center; gap: 10px; }
@@ -350,6 +351,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .icon-button:hover { color: var(--danger); }
 .empty-state { padding: 24px 0; color: var(--subtle); font-size: 12px; text-align: center; }
 .task-editor textarea { min-height: 74px; border: 1px solid #d8d8d8; border-radius: 6px; padding: 10px 12px; font: inherit; line-height: 1.45; resize: vertical; }
+.task-settings-label { margin-top: 4px; font-size: 13px; font-weight: 650; }
 .task-editor .editor-actions { justify-content: flex-end; }
 
 .dataset-toolbar input { max-width: 420px; }

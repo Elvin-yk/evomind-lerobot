@@ -8,6 +8,7 @@ type RuntimeEvent = { sequence?: number; operation: string; phase: string; messa
 type CollectionTask = {
   id: string; work_date: string; name: string; description: string;
   target_duration_s: number; actual_duration_s: number; episode_count: number;
+  num_episodes: number; episode_time_s: number; reset_time_s: number; fps: number;
   session_count: number; progress_percent: number; completed: boolean; locked: boolean;
 };
 type TrendItem = { date: string; target_duration_s: number; actual_duration_s: number; episode_count: number };
@@ -59,6 +60,32 @@ function byteLabel(bytes: number) {
   return `${gib >= 100 ? gib.toFixed(0) : gib.toFixed(1)} GB`;
 }
 
+function TaskNumberInput({ value, onCommit, min, max, disabled = false }: {
+  value: number; onCommit: (value: number) => void; min: number; max: number; disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDraft(String(value)), 0);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+
+  function commit() {
+    const parsed = Number(draft);
+    if (!draft.trim() || !Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const normalized = Math.min(max, Math.max(min, Math.trunc(parsed)));
+    setDraft(String(normalized));
+    onCommit(normalized);
+  }
+
+  return <input type="number" value={draft} min={min} max={max} disabled={disabled}
+    onChange={(event) => setDraft(event.target.value)} onBlur={commit}
+    onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
+}
+
 export function StorageNotice({ initial, refreshKey = null }: { initial: StorageInfo | null; refreshKey?: string | number | null }) {
   const [refreshedStorage, setRefreshedStorage] = useState<StorageInfo | null>(null);
 
@@ -104,6 +131,10 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [targetMinutes, setTargetMinutes] = useState(60);
+  const [numEpisodes, setNumEpisodes] = useState(20);
+  const [episodeTime, setEpisodeTime] = useState(30);
+  const [resetTime, setResetTime] = useState(10);
+  const [fps, setFps] = useState(30);
 
   const refresh = useCallback(async () => {
     try {
@@ -129,7 +160,10 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     return () => window.clearInterval(timer);
   }, [progress.active_session, refresh]);
 
-  const resetForm = () => { setEditingId(null); setName(''); setDescription(''); setTargetMinutes(60); };
+  const resetForm = () => {
+    setEditingId(null); setName(''); setDescription(''); setTargetMinutes(60);
+    setNumEpisodes(20); setEpisodeTime(30); setResetTime(10); setFps(30);
+  };
 
   async function saveTask() {
     if (!name.trim() || !description.trim() || !Number.isFinite(targetMinutes) || targetMinutes <= 0) return;
@@ -137,6 +171,7 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     const body = JSON.stringify({
       ...(editingId ? {} : { work_date: selectedDate }),
       name: name.trim(), description: description.trim(), target_duration_s: targetMinutes * 60,
+      num_episodes: numEpisodes, episode_time_s: episodeTime, reset_time_s: resetTime, fps,
     });
     try {
       await api(editingId ? `/api/collection/tasks/${editingId}` : '/api/collection/tasks', { method: editingId ? 'PUT' : 'POST', body });
@@ -147,6 +182,8 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   function beginEdit(task: CollectionTask) {
     setEditingId(task.id); setName(task.name); setDescription(task.description);
     setTargetMinutes(Math.max(1, Math.round(task.target_duration_s / 60)));
+    setNumEpisodes(task.num_episodes); setEpisodeTime(task.episode_time_s);
+    setResetTime(task.reset_time_s); setFps(task.fps);
   }
 
   async function removeTask(taskId: string) {
@@ -206,7 +243,7 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
       <div className="task-progress-list">
         {progress.tasks.map((task) => <article className="task-progress-row" key={task.id}>
           <div className="task-progress-main"><div><strong>{task.name}</strong><p>{task.description}</p></div><span className={task.completed ? 'complete' : ''}>{task.completed ? '已完成' : '进行中'}</span></div>
-          <div className="task-progress-values"><strong>{durationLabel(task.actual_duration_s)} / {durationLabel(task.target_duration_s)}</strong><span>{task.episode_count} Episodes · {task.progress_percent.toFixed(0)}%</span></div>
+          <div className="task-progress-values"><strong>{durationLabel(task.actual_duration_s)} / {durationLabel(task.target_duration_s)}</strong><span>{task.episode_count} Episodes · {task.progress_percent.toFixed(0)}%</span><small>计划 {task.num_episodes} 轮 · {task.episode_time_s} 秒 · {task.fps} FPS</small></div>
           <div className="progress-track"><i style={{ width: `${Math.min(task.progress_percent, 100)}%` }} /></div>
           {isToday && <div className="task-row-actions"><button className="text-button" type="button" onClick={() => beginEdit(task)}>编辑</button>{!task.locked && <button className="icon-button" type="button" onClick={() => void removeTask(task.id)} aria-label={`删除${task.name}`}><Trash2 size={15} /></button>}</div>}
         </article>)}
@@ -219,8 +256,13 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
       <div className="section-heading"><div><span>{editingId ? '调整任务' : '今日计划'}</span><h2>{editingId ? '编辑采集任务' : '新增采集任务'}</h2></div></div>
       <div className="form-grid">
         <label>任务名称<input value={name} onChange={(item) => setName(item.target.value)} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} placeholder="例如：积木入盒" /></label>
-        <label>目标时长（分钟）<input type="number" min="1" value={targetMinutes} onChange={(item) => setTargetMinutes(Number(item.target.value))} /></label>
+        <label>目标时长（分钟）<TaskNumberInput value={targetMinutes} onCommit={setTargetMinutes} min={1} max={10_080} /></label>
         <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} placeholder="写入 LeRobot 数据集的完整任务描述" /></label>
+        <div className="full-field task-settings-label">采集设置</div>
+        <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} /></label>
+        <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} /></label>
+        <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} /></label>
+        <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label>
       </div>
       <div className="editor-actions">{editingId && <button className="outline" type="button" onClick={resetForm}>取消</button>}<button className="primary inline-icon" type="button" onClick={() => void saveTask()} disabled={!name.trim() || !description.trim() || !Number.isFinite(targetMinutes) || targetMinutes <= 0}><Plus size={15} />{editingId ? '保存修改' : '添加任务'}</button></div>
     </section>}</>}

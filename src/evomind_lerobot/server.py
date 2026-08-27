@@ -94,6 +94,10 @@ class CollectionTaskCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(min_length=1, max_length=500)
     target_duration_s: float = Field(gt=0, le=604_800)
+    num_episodes: int = Field(default=20, ge=1, le=10_000)
+    episode_time_s: int = Field(default=30, ge=1, le=86_400)
+    reset_time_s: int = Field(default=10, ge=0, le=86_400)
+    fps: int = Field(default=30, ge=1, le=60)
 
     @field_validator("name", "description")
     @classmethod
@@ -108,6 +112,10 @@ class CollectionTaskUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(min_length=1, max_length=500)
     target_duration_s: float = Field(gt=0, le=604_800)
+    num_episodes: int = Field(default=20, ge=1, le=10_000)
+    episode_time_s: int = Field(default=30, ge=1, le=86_400)
+    reset_time_s: int = Field(default=10, ge=0, le=86_400)
+    fps: int = Field(default=30, ge=1, le=60)
 
     @field_validator("name", "description")
     @classmethod
@@ -184,6 +192,10 @@ def create_app():
                 name=body.name,
                 description=body.description,
                 target_duration_s=body.target_duration_s,
+                num_episodes=body.num_episodes,
+                episode_time_s=body.episode_time_s,
+                reset_time_s=body.reset_time_s,
+                fps=body.fps,
             )
         except CollectionTaskConflictError as error:
             raise HTTPException(409, str(error)) from error
@@ -196,6 +208,10 @@ def create_app():
                 name=body.name,
                 description=body.description,
                 target_duration_s=body.target_duration_s,
+                num_episodes=body.num_episodes,
+                episode_time_s=body.episode_time_s,
+                reset_time_s=body.reset_time_s,
+                fps=body.fps,
             )
         except CollectionTaskNotFoundError as error:
             raise HTTPException(404, str(error)) from error
@@ -291,11 +307,7 @@ def create_app():
 
         def profile_bindings(kind: str):
             transport = profile[f"{kind}_transport"]
-            source = (
-                configuration.can_bindings
-                if transport == "socketcan"
-                else configuration.serial_bindings
-            )
+            source = configuration.can_bindings if transport == "socketcan" else configuration.serial_bindings
             return [binding for binding in source if binding.kind == kind]
 
         for kind in ("robot", "teleoperator"):

@@ -73,6 +73,16 @@ class CollectionStore:
                 )
                 """
             )
+            task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(daily_tasks)")}
+            task_setting_columns = {
+                "num_episodes": "INTEGER NOT NULL DEFAULT 20",
+                "episode_time_s": "INTEGER NOT NULL DEFAULT 30",
+                "reset_time_s": "INTEGER NOT NULL DEFAULT 10",
+                "fps": "INTEGER NOT NULL DEFAULT 30",
+            }
+            for column, definition in task_setting_columns.items():
+                if column not in task_columns:
+                    connection.execute(f"ALTER TABLE daily_tasks ADD COLUMN {column} {definition}")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS collection_sessions (
@@ -132,6 +142,10 @@ class CollectionStore:
             "name": values["name"],
             "description": values["description"],
             "target_duration_s": target,
+            "num_episodes": int(values["num_episodes"]),
+            "episode_time_s": int(values["episode_time_s"]),
+            "reset_time_s": int(values["reset_time_s"]),
+            "fps": int(values["fps"]),
             "actual_duration_s": duration,
             "episode_count": episodes,
             "session_count": sessions,
@@ -149,6 +163,10 @@ class CollectionStore:
         name: str,
         description: str,
         target_duration_s: float,
+        num_episodes: int,
+        episode_time_s: int,
+        reset_time_s: int,
+        fps: int,
     ) -> dict[str, Any]:
         task_id = str(uuid.uuid4())
         now = _utc_now()
@@ -157,8 +175,9 @@ class CollectionStore:
                 connection.execute(
                     """
                     INSERT INTO daily_tasks
-                        (id, work_date, name, description, target_duration_s, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (id, work_date, name, description, target_duration_s, num_episodes,
+                         episode_time_s, reset_time_s, fps, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -166,6 +185,10 @@ class CollectionStore:
                         name.strip(),
                         description.strip(),
                         target_duration_s,
+                        num_episodes,
+                        episode_time_s,
+                        reset_time_s,
+                        fps,
                         now,
                         now,
                     ),
@@ -226,21 +249,43 @@ class CollectionStore:
         name: str,
         description: str,
         target_duration_s: float,
+        num_episodes: int,
+        episode_time_s: int,
+        reset_time_s: int,
+        fps: int,
     ) -> dict[str, Any]:
         current = self.get_task(task_id)
         if current["locked"] and (
             name.strip() != current["name"] or description.strip() != current["description"]
         ):
             raise CollectionTaskConflictError("任务已开始采集，只能调整目标时长")
+        if current["locked"] and (
+            num_episodes != current["num_episodes"]
+            or episode_time_s != current["episode_time_s"]
+            or reset_time_s != current["reset_time_s"]
+            or fps != current["fps"]
+        ):
+            raise CollectionTaskConflictError("任务已开始采集，不能修改采集设置")
         try:
             with self._connect() as connection:
                 connection.execute(
                     """
                     UPDATE daily_tasks
-                    SET name = ?, description = ?, target_duration_s = ?, updated_at = ?
+                    SET name = ?, description = ?, target_duration_s = ?, num_episodes = ?,
+                        episode_time_s = ?, reset_time_s = ?, fps = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (name.strip(), description.strip(), target_duration_s, _utc_now(), task_id),
+                    (
+                        name.strip(),
+                        description.strip(),
+                        target_duration_s,
+                        num_episodes,
+                        episode_time_s,
+                        reset_time_s,
+                        fps,
+                        _utc_now(),
+                        task_id,
+                    ),
                 )
         except sqlite3.IntegrityError as error:
             raise CollectionTaskConflictError("当天已存在同名任务") from error
