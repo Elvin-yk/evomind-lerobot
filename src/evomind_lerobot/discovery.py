@@ -96,19 +96,37 @@ def _video_devices() -> list[dict[str, str]]:
     return devices
 
 
-def _video_aliases() -> tuple[dict[str, str], dict[str, str]]:
-    aliases = []
+def _video_aliases() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    aliases: list[dict[str, list[str]]] = []
     for directory in (Path("/dev/v4l/by-id"), Path("/dev/v4l/by-path")):
-        aliases.append(
-            {
-                str(path.resolve()): str(path)
-                for path in sorted(directory.iterdir())
-                if path.is_symlink()
-            }
-            if directory.exists()
-            else {}
-        )
+        grouped: dict[str, list[str]] = {}
+        if directory.exists():
+            for path in sorted(directory.iterdir()):
+                if path.is_symlink():
+                    grouped.setdefault(str(path.resolve()), []).append(str(path))
+        aliases.append(grouped)
     return aliases[0], aliases[1]
+
+
+def _camera_capture_path(
+    resolved_video: str,
+    by_id: dict[str, list[str]],
+    by_path: dict[str, list[str]],
+) -> tuple[int, str]:
+    id_aliases = by_id.get(resolved_video, [])
+    rgb_alias = next((alias for alias in id_aliases if "-rgb-video-index0" in alias), None)
+    if rgb_alias:
+        return 0, rgb_alias
+    index_zero_alias = next((alias for alias in id_aliases if alias.endswith("-video-index0")), None)
+    if index_zero_alias:
+        return 1, index_zero_alias
+    path_index_zero = next(
+        (alias for alias in by_path.get(resolved_video, []) if alias.endswith("-video-index0")),
+        None,
+    )
+    if path_index_zero:
+        return 2, path_index_zero
+    return 3, resolved_video
 
 
 def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -130,18 +148,38 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
         )
         key = str(usb_device)
         resolved_video = str(Path(video["path"]).resolve())
-        stable_path = by_id.get(resolved_video) or by_path.get(resolved_video) or video["path"]
+        score, capture_path = _camera_capture_path(resolved_video, by_id, by_path)
         camera = cameras.setdefault(
             key,
             {
-                "id": stable_path,
                 "name": video["name"],
-                "path": stable_path,
                 "paths": [],
+                "candidates": [],
             },
         )
         camera["paths"].append(video["path"])
-    return list(cameras.values())
+        camera["candidates"].append((score, capture_path, resolved_video))
+
+    result = []
+    for camera in cameras.values():
+        candidates = sorted(camera.pop("candidates"), key=lambda item: (item[0], item[1]))
+        selected_path = candidates[0][1]
+        capture_paths = list(
+            dict.fromkeys(
+                [candidate[1] for candidate in candidates]
+                + [candidate[2] for candidate in candidates]
+            )
+        )
+        result.append(
+            {
+                "id": selected_path,
+                "name": camera["name"],
+                "path": selected_path,
+                "paths": camera["paths"],
+                "capture_paths": capture_paths,
+            }
+        )
+    return result
 
 
 def hardware_inventory() -> dict[str, Any]:

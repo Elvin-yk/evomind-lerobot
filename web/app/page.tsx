@@ -26,7 +26,7 @@ type Catalog = { systems: SystemProfile[] };
 type SerialDevice = { id: string; path: string; device: string };
 type CanDevice = { id: string; serial_number: string; interface: string; state: string; up: boolean; bitrate: number | null };
 type CameraDevice = { id: string; name: string; path: string; paths: string[] };
-type CameraPreview = CameraDevice & { preview_data_url: string };
+type CameraPreview = CameraDevice & { preview_data_url: string | null; preview_error: string | null };
 type HardwareInventory = { serial: SerialDevice[]; socketcan: CanDevice[]; cameras: CameraDevice[] };
 type Side = 'single' | 'left' | 'right';
 type SerialKind = 'robot' | 'teleoperator';
@@ -439,7 +439,8 @@ function IdentificationStep({ slots, cameras, mode, showHardware, showSensors, s
     })}</div></section>}
     {showSensors && cameras.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>传感器</h3><button className="text-button inline-icon" type="button" onClick={onRefreshCameras} disabled={cameraLoading}><RefreshCw size={13} />{cameraLoading ? '读取中' : '重新识别'}</button></div>{currentCamera && <p className="identify-prompt">请选择 <strong>{cameraDisplayLabel(currentCamera, cameras, cameras.indexOf(currentCamera), mode)}</strong> 的画面</p>}<div className="identify-camera-grid">{cameraPreviews.map((camera) => {
       const assignedEntry = Object.entries(cameraAssignments).find(([, id]) => id === camera.id); const assignedCamera = cameras.find((item) => item.id === assignedEntry?.[0]); const assignedIndex = assignedCamera ? cameras.indexOf(assignedCamera) : -1;
-      return <button className={`identify-camera-card ${assignedCamera ? 'used' : ''}`} type="button" disabled={!currentCamera || Boolean(assignedCamera)} onClick={() => currentCamera && onCameraSelect(currentCamera.id, camera.id)} key={camera.id}><img src={camera.preview_data_url} alt={camera.name} /><span>{assignedCamera ? <><Check size={14} />{cameraDisplayLabel(assignedCamera, cameras, assignedIndex, mode)}</> : '选择此画面'}</span></button>;
+      const available = Boolean(camera.preview_data_url);
+      return <button className={`identify-camera-card ${assignedCamera ? 'used' : ''} ${available ? '' : 'unavailable'}`} type="button" disabled={!currentCamera || Boolean(assignedCamera) || !available} onClick={() => currentCamera && onCameraSelect(currentCamera.id, camera.id)} key={camera.id}>{camera.preview_data_url ? <img src={camera.preview_data_url} alt={camera.name} /> : <div className="identify-camera-placeholder"><strong>画面不可用</strong><small>{camera.preview_error}</small></div>}<span>{assignedCamera ? <><Check size={14} />{cameraDisplayLabel(assignedCamera, cameras, assignedIndex, mode)}</> : available ? '选择此画面' : camera.name}</span></button>;
     })}</div>{!cameraLoading && cameraPreviews.length === 0 && <p className="empty">未读取到摄像头画面</p>}</section>}
     <div className="device-setup-actions"><button className="primary" type="button" onClick={onSave} disabled={busy || !completed}>{busy ? '保存中' : '完成识别'}</button></div>
   </div>;

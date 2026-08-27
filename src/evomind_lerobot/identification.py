@@ -101,28 +101,35 @@ def camera_previews() -> list[dict[str, Any]]:
 
     previews = []
     for camera in hardware_inventory()["cameras"]:
-        capture = cv2.VideoCapture(camera["path"])
-        try:
-            if not capture.isOpened():
-                continue
-            frame = _read_camera_frame(capture)
-            if frame is None:
-                continue
-            encoded_ok, encoded = cv2.imencode(".jpg", frame)
-            if not encoded_ok:
-                continue
-            previews.append(
-                {
-                    "id": camera["id"],
-                    "name": camera["name"],
-                    "path": camera["path"],
-                    "paths": camera["paths"],
-                    "preview_data_url": (
-                        "data:image/jpeg;base64,"
-                        + base64.b64encode(encoded.tobytes()).decode("ascii")
-                    ),
-                }
-            )
-        finally:
-            capture.release()
+        preview_data_url = None
+        preview_error = "摄像头已识别，但无法读取画面"
+        for capture_path in camera.get("capture_paths", [camera["path"]]):
+            capture = cv2.VideoCapture(capture_path)
+            try:
+                if not capture.isOpened():
+                    continue
+                frame = _read_camera_frame(capture)
+                if frame is None:
+                    continue
+                encoded_ok, encoded = cv2.imencode(".jpg", frame)
+                if not encoded_ok:
+                    continue
+                preview_data_url = (
+                    "data:image/jpeg;base64,"
+                    + base64.b64encode(encoded.tobytes()).decode("ascii")
+                )
+                preview_error = None
+                break
+            finally:
+                capture.release()
+        previews.append(
+            {
+                "id": camera["id"],
+                "name": camera["name"],
+                "path": camera["path"],
+                "paths": camera["paths"],
+                "preview_data_url": preview_data_url,
+                "preview_error": preview_error,
+            }
+        )
     return previews

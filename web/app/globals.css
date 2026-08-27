@@ -138,8 +138,12 @@ code { font-family: var(--font-geist-mono), monospace; }
 .identify-camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
 .identify-camera-card { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 0; text-align: left; }
 .identify-camera-card.used { border-color: #000; }
+.identify-camera-card.unavailable { cursor: not-allowed; }
 .identify-camera-card img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
 .identify-camera-card span { display: flex; min-height: 42px; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding: 0 12px; font-size: 13px; }
+.identify-camera-placeholder { display: grid; aspect-ratio: 16 / 9; place-content: center; gap: 5px; background: var(--soft); color: var(--muted); padding: 18px; text-align: center; }
+.identify-camera-placeholder strong { color: #555; font-size: 13px; }
+.identify-camera-placeholder small { font-size: 11px; line-height: 1.45; }
 
 .device-overview { display: grid; gap: 30px; }
 .overview-hero { padding: 2px 0 8px; }
