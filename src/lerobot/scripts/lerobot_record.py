@@ -546,6 +546,7 @@ def record(
                         "recording",
                         "resetting",
                         episode=dataset.num_episodes,
+                        rerecord_episode=bool(events["rerecord_episode"]),
                         control_source="teleoperation",
                     )
 

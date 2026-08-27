@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 'use client';
 
-import { Check, ChevronDown, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Trash2, Volume2, VolumeX } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -15,8 +15,9 @@ import {
   type DeviceCategory, type DeviceCategoryId, type DeviceModelOption, type DeviceTransport,
   type SystemProfile,
 } from './deviceCatalog';
+import { useRuntimeSounds } from './runtimeSounds';
 
-type RuntimeEvent = {
+export type RuntimeEvent = {
   sequence: number; operation: string; phase: string; message: string;
   job_id: string | null; data: Record<string, unknown>; timestamp: string;
 };
@@ -199,6 +200,7 @@ export default function Home() {
   const savedModel = models.find((model) => model.variants.some((variant) => variant.profile.id === saved?.profile_id));
   const savedProfile = savedModel?.variants.find((variant) => variant.profile.id === saved?.profile_id)?.profile;
   const ready = isReady(saved, savedProfile);
+  const runtimeSounds = useRuntimeSounds(runtimeEvent);
 
   useEffect(() => {
     Promise.all([readJson<RuntimeStatus>('/api/status'), readJson<Catalog>('/api/catalog'), readJson<DeviceConfiguration | null>('/api/config'), readJson<WorkspaceInventory>('/api/workspace')])
@@ -404,6 +406,9 @@ export default function Home() {
         const disabled = item.id === 'maintenance' ? !saved : item.id !== 'device' && !ready;
         return <button className={activePage === item.id ? 'active' : ''} type="button" disabled={disabled} onClick={() => navigate(item.id)} title={collapsed ? item.label : undefined} key={item.id}>{collapsed ? item.label.slice(0, 1) : item.label}</button>;
       })}</nav>
+      <button className={`sound-control ${runtimeSounds.ready ? 'active' : ''}`} type="button" onClick={() => void runtimeSounds.toggle()} title={runtimeSounds.label} aria-label={runtimeSounds.label}>
+        {runtimeSounds.ready ? <Volume2 size={16} /> : <VolumeX size={16} />}{!collapsed && <span>{runtimeSounds.label}</span>}
+      </button>
       <div className="runtime"><i />{!collapsed && <div><strong>{status ? '运行正常' : '正在连接'}</strong><span>LeRobot {status?.lerobot_version ?? '—'}</span></div>}</div>
     </aside>
     <main>
