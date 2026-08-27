@@ -127,6 +127,8 @@ def camera_previews() -> list[dict[str, Any]]:
                 "id": camera["id"],
                 "name": camera["name"],
                 "path": camera["path"],
+                "driver": camera["driver"],
+                "serial_number": camera["serial_number"],
                 "paths": camera["paths"],
                 "preview_data_url": preview_data_url,
                 "preview_error": preview_error,

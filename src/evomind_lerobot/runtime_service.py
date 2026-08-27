@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from evomind_lerobot.collection_store import CollectionStore, CollectionStoreError
 from evomind_lerobot.device_config import (
     CanBinding,
+    CameraBinding,
     DeviceConfiguration,
     SerialBinding,
     calibration_path,
@@ -128,10 +129,21 @@ def _recording_dataset_name(task: dict[str, Any]) -> str:
     return f"{name[:48] or 'recording'}_{task_prefix}"
 
 
-def _camera_config(port: str, fps: int) -> dict[str, Any]:
+def _camera_config(binding: CameraBinding, fps: int) -> dict[str, Any]:
+    if binding.driver == "intelrealsense":
+        return {
+            "type": "intelrealsense",
+            "serial_number_or_name": binding.serial_number,
+            "fps": min(fps, 30),
+            "width": 640,
+            "height": 480,
+            "warmup_s": 2,
+            "use_rgb": True,
+            "use_depth": False,
+        }
     return {
         "type": "opencv",
-        "index_or_path": port,
+        "index_or_path": binding.port,
         "fps": min(fps, 30),
         "width": 640,
         "height": 480,
@@ -170,7 +182,7 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
         for side in ("left", "right"):
             binding = next(item for item in bindings if item.side == side)
             side_cameras = {
-                _camera_key(camera.alias, side): _camera_config(camera.port, fps)
+                _camera_key(camera.alias, side): _camera_config(camera, fps)
                 for camera in camera_bindings
                 if camera.side == side or (socketcan and side == "right" and camera.side == "single")
             }
@@ -180,7 +192,7 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
             }
     elif bindings:
         payload["port"] = _binding_port(bindings[0])
-        payload["cameras"] = {camera.alias: _camera_config(camera.port, fps) for camera in camera_bindings}
+        payload["cameras"] = {camera.alias: _camera_config(camera, fps) for camera in camera_bindings}
     return payload
 
 
@@ -231,6 +243,12 @@ def _decode_hardware(
 ):
     import draccus
 
+    from lerobot.cameras.opencv.configuration_opencv import (  # noqa: F401
+        OpenCVCameraConfig as _OpenCVCameraConfig,
+    )
+    from lerobot.cameras.realsense.configuration_realsense import (  # noqa: F401
+        RealSenseCameraConfig as _RealSenseCameraConfig,
+    )
     from lerobot.robots.config import RobotConfig
     from lerobot.scripts import lerobot_teleoperate as _core_hardware_configs  # noqa: F401
     from lerobot.teleoperators.config import TeleoperatorConfig
@@ -265,6 +283,7 @@ def _execute_teleoperation(payload: dict[str, Any]) -> None:
 
 def _execute_recording(payload: dict[str, Any]) -> None:
     from lerobot.configs.dataset import DatasetRecordConfig
+    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.scripts.lerobot_record import RecordConfig, record
 
     task_description = str(payload.pop("_task_description"))
@@ -285,6 +304,10 @@ def _execute_recording(payload: dict[str, Any]) -> None:
                 episode_time_s=request.episode_time_s,
                 reset_time_s=request.reset_time_s,
                 push_to_hub=False,
+                streaming_encoding=True,
+                encoder_threads=2,
+                encoder_queue_maxsize=30,
+                rgb_encoder=RGBEncoderConfig(vcodec="h264"),
             ),
             display_data=False,
             play_sounds=False,
@@ -295,6 +318,7 @@ def _execute_recording(payload: dict[str, Any]) -> None:
 def _execute_rollout(payload: dict[str, Any]) -> None:
     from lerobot.configs import PreTrainedConfig
     from lerobot.configs.dataset import DatasetRecordConfig
+    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.rollout.configs import EpisodicStrategyConfig, RolloutConfig, SentryStrategyConfig
     from lerobot.scripts.lerobot_rollout import rollout
 
@@ -310,6 +334,10 @@ def _execute_rollout(payload: dict[str, Any]) -> None:
         episode_time_s=request.episode_time_s,
         reset_time_s=request.reset_time_s,
         push_to_hub=False,
+        streaming_encoding=True,
+        encoder_threads=2,
+        encoder_queue_maxsize=30,
+        rgb_encoder=RGBEncoderConfig(vcodec="h264"),
     )
     strategy = EpisodicStrategyConfig() if request.strategy == "episodic" else SentryStrategyConfig()
     rollout(

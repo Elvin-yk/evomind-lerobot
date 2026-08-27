@@ -38,6 +38,14 @@ class CameraBinding(StrictModel):
     port: str
     alias: str = Field(min_length=1)
     side: Literal["single", "left", "right"]
+    driver: Literal["opencv", "intelrealsense"]
+    serial_number: str | None
+
+    @model_validator(mode="after")
+    def validate_driver_identity(self) -> CameraBinding:
+        if self.driver == "intelrealsense" and not self.serial_number:
+            raise ValueError("RealSense camera bindings require a serial number")
+        return self
 
 
 class CameraSlot(StrictModel):

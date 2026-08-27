@@ -153,6 +153,9 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
             key,
             {
                 "name": video["name"],
+                "serial_number": (usb_device / "serial").read_text().strip()
+                if (usb_device / "serial").exists()
+                else "",
                 "paths": [],
                 "candidates": [],
             },
@@ -175,6 +178,8 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
                 "id": selected_path,
                 "name": camera["name"],
                 "path": selected_path,
+                "driver": "intelrealsense" if "realsense" in camera["name"].lower() else "opencv",
+                "serial_number": camera.pop("serial_number"),
                 "paths": camera["paths"],
                 "capture_paths": capture_paths,
             }

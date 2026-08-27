@@ -25,7 +25,11 @@ type WorkflowRuntime = { running: boolean; job_id: string | null; operation: str
 type Catalog = { systems: SystemProfile[] };
 type SerialDevice = { id: string; path: string; device: string };
 type CanDevice = { id: string; serial_number: string; interface: string; state: string; up: boolean; bitrate: number | null };
-type CameraDevice = { id: string; name: string; path: string; paths: string[] };
+type CameraDriver = 'opencv' | 'intelrealsense';
+type CameraDevice = {
+  id: string; name: string; path: string; paths: string[];
+  driver: CameraDriver; serial_number: string;
+};
 type CameraPreview = CameraDevice & { preview_data_url: string | null; preview_error: string | null };
 type HardwareInventory = { serial: SerialDevice[]; socketcan: CanDevice[]; cameras: CameraDevice[] };
 type Side = 'single' | 'left' | 'right';
@@ -36,7 +40,10 @@ type SerialBinding = {
   id: string; port: string; alias: string; kind: SerialKind; side: Side;
 };
 type CanBinding = { id: string; alias: string; kind: SerialKind; side: Side };
-type CameraBinding = { id: string; port: string; alias: string; side: Side };
+type CameraBinding = {
+  id: string; port: string; alias: string; side: Side;
+  driver: CameraDriver; serial_number: string | null;
+};
 type CameraSlot = { alias: string; kind: CameraKind; side: Side };
 type DeviceConfiguration = {
   profile_id: string; robot_type: string; teleoperator_type: string | null;
@@ -363,7 +370,10 @@ export default function Home() {
         const device = inventory.cameras.find((item) => item.id === cameraAssignments[camera.id]);
         if (!device) throw new Error(`未找到${cameraDisplayLabel(camera, cameras, index, mode)}`);
         const slot = saved.camera_slots[index];
-        return { id: device.id, port: device.path, alias: slot.alias, side: slot.side };
+        return {
+          id: device.id, port: device.path, alias: slot.alias, side: slot.side,
+          driver: device.driver, serial_number: device.serial_number || null,
+        };
       });
       const configuration = await requestJson<DeviceConfiguration>('/api/config', 'PUT', { ...saved, serial_bindings: serialBindings, can_bindings: canBindings, camera_bindings: cameraBindings });
       setSaved(configuration); await stopMotion(); setIdentifying(false); setIdentificationScope('all');

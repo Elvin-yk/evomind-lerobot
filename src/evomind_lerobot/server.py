@@ -371,6 +371,10 @@ def create_app():
             device = camera_devices.get(binding.id)
             if device is None or binding.port != device["path"]:
                 raise HTTPException(400, f"Camera is no longer connected: {binding.id}")
+            if binding.driver != device["driver"]:
+                raise HTTPException(400, f"Camera driver does not match the connected device: {binding.id}")
+            if binding.serial_number and binding.serial_number != device["serial_number"]:
+                raise HTTPException(400, f"Camera serial number does not match the connected device: {binding.id}")
 
         save_device_configuration(configuration)
         return configuration.model_dump()
