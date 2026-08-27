@@ -428,6 +428,11 @@ def create_app():
         except (ConnectionError, OSError, RuntimeError, ValueError) as error:
             raise HTTPException(400, str(error)) from error
 
+    @app.post("/api/maintenance/piper/close")
+    async def close_piper_arm():
+        await asyncio.to_thread(close_piper_session)
+        return {"status": "closed"}
+
     @app.post("/api/maintenance/piper/action")
     async def control_piper_arm(body: PiperActionRequest):
         if jobs.current is not None:

@@ -492,6 +492,10 @@ function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
       .catch(() => setError('读取 CAN 控制器失败'));
   }, []);
 
+  useEffect(() => () => {
+    void fetch('/api/maintenance/piper/close', { method: 'POST', keepalive: true });
+  }, []);
+
   async function scanArm() {
     if (!deviceId) return;
     setBusy(true); setError(null); setLiveError(null); setControlArmed(false);
