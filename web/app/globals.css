@@ -49,6 +49,10 @@ h2, h3, p { margin-top: 0; }
 .header-workflow-status .workflow-summary > div { min-width: 128px; border: 0; padding: 0; text-align: right; }
 .header-workflow-status .workflow-summary span { margin-bottom: 4px; }
 .header-workflow-status .workflow-summary p { margin-top: 3px; }
+.workflow-error-details { position: relative; align-self: flex-end; font-size: 12px; text-align: right; }
+.workflow-error-details summary { color: var(--muted); cursor: pointer; list-style: none; white-space: nowrap; }
+.workflow-error-details summary::-webkit-details-marker { display: none; }
+.workflow-error-details[open] pre { position: absolute; z-index: 20; top: calc(100% + 10px); right: 0; width: min(680px, 78vw); max-height: 360px; margin: 0; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: white; box-shadow: 0 14px 36px rgb(0 0 0 / 12%); padding: 16px; color: var(--text); font: 12px/1.55 var(--font-geist-mono), monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 .header-recognition { position: relative; }
 .header-recognition summary { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; list-style: none; cursor: pointer; }
 .recognition-chevron { flex: 0 0 auto; transition: transform .15s ease; }

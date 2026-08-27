@@ -1071,12 +1071,14 @@ function WorkflowSection({ title, children }: { title: string; children: React.R
 }
 
 function WorkflowSummary({ kind, dataset, policy, event, error }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; dataset?: LocalDataset; policy?: LocalPolicy; event: RuntimeEvent | null; error: string }) {
-  const state = error || event?.message || '等待开始';
+  const failureState = { teleoperation: '遥操作启动失败', recording: '采集失败', inference: '推理失败', replay: '回放失败' }[kind];
+  const state = error ? failureState : event?.message || '等待开始';
   const phaseDetail = error && event?.phase !== 'failed' ? '启动失败' : event ? `${event.phase} · ${new Date(event.timestamp).toLocaleTimeString()}` : '尚未启动';
-  if (kind === 'teleoperation') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={event?.data.fps ? `${Number(event.data.fps).toFixed(1)} FPS` : phaseDetail} /></div>;
-  if (kind === 'recording') return <div className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} /></div>;
-  if (kind === 'inference') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? '未选择'} detail={policy ? `${policy.type} · 本地 checkpoint` : '未发现本地模型'} /></div>;
-  return <div className="workflow-summary"><SummaryItem label="回放状态" value={state} detail={event?.data.frame !== undefined ? `${String(event.data.frame)} / ${String(event.data.total_frames ?? '—')} 帧` : phaseDetail} /><SummaryItem label={dataset ? dataset.id : '数据集'} value={dataset ? `${dataset.frames} 帧` : '未选择'} detail={dataset ? `${dataset.episodes} Episodes · ${dataset.fps || '—'} FPS` : '未发现本地数据集'} /></div>;
+  const errorDetails = error ? <details className="workflow-error-details"><summary>错误详情</summary><pre>{error}</pre></details> : null;
+  if (kind === 'teleoperation') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={event?.data.fps ? `${Number(event.data.fps).toFixed(1)} FPS` : phaseDetail} />{errorDetails}</div>;
+  if (kind === 'recording') return <div className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} />{errorDetails}</div>;
+  if (kind === 'inference') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? '未选择'} detail={policy ? `${policy.type} · 本地 checkpoint` : '未发现本地模型'} />{errorDetails}</div>;
+  return <div className="workflow-summary"><SummaryItem label="回放状态" value={state} detail={event?.data.frame !== undefined ? `${String(event.data.frame)} / ${String(event.data.total_frames ?? '—')} 帧` : phaseDetail} /><SummaryItem label={dataset ? dataset.id : '数据集'} value={dataset ? `${dataset.frames} 帧` : '未选择'} detail={dataset ? `${dataset.episodes} Episodes · ${dataset.fps || '—'} FPS` : '未发现本地数据集'} />{errorDetails}</div>;
 }
 
 function SummaryItem({ label, value, detail }: { label: string; value: string; detail: string }) {

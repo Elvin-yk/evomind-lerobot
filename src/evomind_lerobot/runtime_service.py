@@ -140,9 +140,7 @@ def _camera_key(alias: str, side: str) -> str:
     return alias.removeprefix(prefix) if side in {"left", "right"} else alias
 
 
-def _device_bindings(
-    configuration: DeviceConfiguration, kind: str
-) -> list[SerialBinding | CanBinding]:
+def _device_bindings(configuration: DeviceConfiguration, kind: str) -> list[SerialBinding | CanBinding]:
     return [
         binding
         for binding in [*configuration.serial_bindings, *configuration.can_bindings]
@@ -167,20 +165,15 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
         socketcan = all(isinstance(binding, CanBinding) for binding in bindings)
         for side in ("left", "right"):
             binding = next(item for item in bindings if item.side == side)
-            side_cameras = {} if socketcan else {
-                    _camera_key(camera.alias, side): _camera_config(camera.port, fps)
-                    for camera in camera_bindings
-                    if camera.side == side
-                }
+            side_cameras = {
+                _camera_key(camera.alias, side): _camera_config(camera.port, fps)
+                for camera in camera_bindings
+                if camera.side == side or (socketcan and side == "right" and camera.side == "single")
+            }
             payload[f"{side}_arm_config"] = {
                 "port": _binding_port(binding),
                 "cameras": side_cameras,
             }
-        payload["cameras"] = {
-            camera.alias: _camera_config(camera.port, fps)
-            for camera in camera_bindings
-            if socketcan or camera.side == "single"
-        }
     elif bindings:
         payload["port"] = _binding_port(bindings[0])
         payload["cameras"] = {camera.alias: _camera_config(camera.port, fps) for camera in camera_bindings}
@@ -213,9 +206,7 @@ def _configuration() -> DeviceConfiguration:
 
 
 def _require_calibration(configuration: DeviceConfiguration, kind: str) -> None:
-    configured_type = (
-        configuration.robot_type if kind == "robot" else configuration.teleoperator_type or ""
-    )
+    configured_type = configuration.robot_type if kind == "robot" else configuration.teleoperator_type or ""
     if "piperx" in configured_type:
         return
     missing = [
@@ -446,7 +437,9 @@ class RuntimeService:
         job = self._jobs.acquire(operation, f"正在启动 {operation.value}")
         if operation is Operation.RECORDING:
             try:
-                self._collection_store.start_session(job.id, request.task_id, payload["_dataset_name"], request)
+                self._collection_store.start_session(
+                    job.id, request.task_id, payload["_dataset_name"], request
+                )
             except Exception:
                 self._jobs.release(job.id, failed=True, message="采集任务启动失败")
                 raise
