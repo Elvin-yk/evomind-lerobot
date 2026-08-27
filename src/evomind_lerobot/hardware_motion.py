@@ -284,7 +284,7 @@ class HardwareMotionSession:
 
 
 class PiperMotionDetector:
-    """Passively watch Piper feedback without changing role or enabling motors."""
+    """Watch Piper feedback without changing role or sending motion targets."""
 
     def __init__(self, interface: str) -> None:
         from piper_sdk import C_PiperInterface_V2, LogLevel
@@ -297,9 +297,10 @@ class PiperMotionDetector:
         )
         self.last_positions: dict[str, dict[int, int]] = {}
 
-    def start(self, timeout_s: float = 0.4) -> None:
+    def start(self, *, release_motors: bool, timeout_s: float = 0.4) -> None:
         self.arm.ConnectPort(can_init=True, piper_init=False)
-        self._disable_motors()
+        if release_motors:
+            self._disable_motors()
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             positions = self._read_positions()
@@ -316,8 +317,6 @@ class PiperMotionDetector:
         """Release all joints before asking the operator to move the arm."""
         status = self.arm.GetArmLowSpdInfoMsgs()
         previous_timestamp = float(getattr(status, "time_stamp", 0.0))
-        self.arm.DisableArm(7)
-        time.sleep(0.05)
         self.arm.DisableArm(7)
 
         deadline = time.monotonic() + timeout_s
@@ -366,8 +365,11 @@ class PiperMotionDetector:
 
 
 class PiperMotionSession:
-    def __init__(self, candidates: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, candidates: list[dict[str, Any]], *, release_motors: bool
+    ) -> None:
         self._candidates = [dict(candidate) for candidate in candidates]
+        self._release_motors = release_motors
         self._detectors: dict[str, PiperMotionDetector] = {}
         self._active_id = ""
 
@@ -376,7 +378,7 @@ class PiperMotionSession:
             stable_id = str(candidate["stable_id"])
             detector = PiperMotionDetector(str(candidate["device"]))
             try:
-                detector.start()
+                detector.start(release_motors=self._release_motors)
             except (ImportError, OSError, RuntimeError, ValueError) as error:
                 candidate["motion_error"] = f"读取 PiperX 失败：{error}"
                 with suppress(Exception):

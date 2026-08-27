@@ -54,7 +54,10 @@ def start_motion_identification(model: str, excluded_ids: set[str]) -> dict[str,
         if _motion_session is not None:
             _motion_session.stop()
         session = (
-            PiperMotionSession(_socketcan_candidates(excluded_ids))
+            PiperMotionSession(
+                _socketcan_candidates(excluded_ids),
+                release_motors=not excluded_ids,
+            )
             if model.strip().lower().replace("-", "").replace("_", "") == "piperx"
             else HardwareMotionSession(_serial_candidates(excluded_ids), model)
         )
