@@ -135,6 +135,7 @@ def _camera_config(port: str, fps: int) -> dict[str, Any]:
         "fps": min(fps, 30),
         "width": 640,
         "height": 480,
+        "fourcc": "MJPG",
     }
 
 
