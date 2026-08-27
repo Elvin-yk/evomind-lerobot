@@ -299,6 +299,7 @@ class PiperMotionDetector:
 
     def start(self, timeout_s: float = 0.4) -> None:
         self.arm.ConnectPort(can_init=True, piper_init=False)
+        self._disable_motors()
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             positions = self._read_positions()
@@ -310,6 +311,27 @@ class PiperMotionDetector:
         # Some PiperX roles remain silent on CAN while stationary. Keep the
         # passive listener eligible so later movement can identify the arm.
         self.last_positions = {}
+
+    def _disable_motors(self, timeout_s: float = 0.8) -> None:
+        """Release all joints before asking the operator to move the arm."""
+        status = self.arm.GetArmLowSpdInfoMsgs()
+        previous_timestamp = float(getattr(status, "time_stamp", 0.0))
+        self.arm.DisableArm(7)
+        time.sleep(0.05)
+        self.arm.DisableArm(7)
+
+        deadline = time.monotonic() + timeout_s
+        saw_updated_status = False
+        while time.monotonic() < deadline:
+            status = self.arm.GetArmLowSpdInfoMsgs()
+            timestamp = float(getattr(status, "time_stamp", 0.0))
+            if timestamp > previous_timestamp:
+                saw_updated_status = True
+                if not any(self.arm.GetArmEnableStatus()):
+                    return
+            time.sleep(0.02)
+        if saw_updated_status:
+            raise RuntimeError("PiperX 电机失能未确认")
 
     def _read_positions(self) -> dict[str, dict[int, int]]:
         feedback = self.arm.GetArmJointMsgs()

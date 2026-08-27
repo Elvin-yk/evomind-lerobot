@@ -50,6 +50,7 @@ h2, h3, p { margin-top: 0; }
 .header-workflow-status .workflow-summary p { margin-top: 3px; }
 .header-recognition { position: relative; }
 .header-recognition summary { display: inline-flex; min-height: 38px; align-items: center; gap: 8px; list-style: none; cursor: pointer; }
+.header-actions button, .header-recognition summary, .activation-view > .primary { white-space: nowrap; }
 .header-recognition summary::-webkit-details-marker { display: none; }
 .header-recognition[open] summary { border-color: #999; background: #fafafa; }
 .header-recognition > div { position: absolute; top: calc(100% + 6px); right: 0; z-index: 10; display: grid; min-width: 150px; gap: 2px; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 4px; box-shadow: 0 10px 28px rgb(0 0 0 / 12%); }
@@ -124,6 +125,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .activation-view { display: flex; align-items: center; justify-content: space-between; gap: 28px; border-block: 1px solid var(--line); padding: 32px 0; }
 .activation-view h2 { margin: 6px 0; font-size: 24px; letter-spacing: -.03em; }
 .activation-view p { margin: 0; color: var(--muted); }
+.activation-view > .primary { min-width: 112px; flex: 0 0 auto; }
 .identify-section > :not(.device-config-heading) { min-width: 0; }
 .identify-slots { display: grid; }
 .identify-slot { display: grid; min-height: 58px; grid-template-columns: 28px 150px minmax(0, 1fr); align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
@@ -413,6 +415,10 @@ code { font-family: var(--font-geist-mono), monospace; }
   .shell { grid-template-columns: 200px minmax(0, 1fr); }
   .shell.is-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
   main { width: calc(100% - 32px); }
+  header, .activation-view { align-items: stretch; flex-direction: column; }
+  .header-actions { align-self: stretch; justify-content: flex-end; }
+  .header-recognition summary { min-width: 112px; justify-content: center; }
+  .activation-view > .primary { align-self: flex-start; }
   .device-category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .device-config-section { grid-template-columns: 160px minmax(0, 1fr); }
   .identify-section { grid-template-columns: 1fr; }
