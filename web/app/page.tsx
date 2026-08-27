@@ -247,10 +247,10 @@ export default function Home() {
     finally { setMotionActive(false); setMotionStarting(false); }
   }, [motionActive, motionStarting]);
 
-  const startMotion = useCallback(async (model: string, excludedIds: string[], kind: SerialKind) => {
+  const startMotion = useCallback(async (model: string, excludedIds: string[]) => {
     setMotionStarting(true);
     try {
-      const result = await postJson<MotionStartResult>('/api/identify/motion/start', { model, excluded_ids: excludedIds, kind });
+      const result = await postJson<MotionStartResult>('/api/identify/motion/start', { model, excluded_ids: excludedIds });
       setMotionPorts(result.ports);
       if (result.readable_count === 0) throw new Error(result.ports.map((port) => port.motion_error).find(Boolean) || '未发现可识别的机械臂');
       setMotionActive(true);
@@ -282,7 +282,7 @@ export default function Home() {
       setInventory(nextInventory);
       if (scope !== 'hardware') setCameraPreviews(await postJson<CameraPreview[]>('/api/identify/cameras'));
       const firstSlot = hardwareSlots(savedProfile)[0];
-      if (scope !== 'sensors' && firstSlot) await startMotion(savedModel.id, [], firstSlot.kind);
+      if (scope !== 'sensors' && firstSlot) await startMotion(savedModel.id, []);
     } catch (identifyError) { setError(identifyError instanceof Error ? identifyError.message : '设备识别启动失败'); }
     finally { setBusy(false); }
   }
@@ -306,7 +306,7 @@ export default function Home() {
           const nextCanAssignments = pendingSlot.transport === 'socketcan' ? { ...canAssignments, [pendingSlot.id]: moved.stable_id } : canAssignments;
           setMotionActive(false); setSerialAssignments(nextSerialAssignments); setCanAssignments(nextCanAssignments);
           const nextSlot = pendingSlots.find((slot) => !(slot.transport === 'socketcan' ? nextCanAssignments[slot.id] : nextSerialAssignments[slot.id]));
-          if (nextSlot && savedModel) await startMotion(savedModel.id, [...Object.values(nextSerialAssignments), ...Object.values(nextCanAssignments)], nextSlot.kind);
+          if (nextSlot && savedModel) await startMotion(savedModel.id, [...Object.values(nextSerialAssignments), ...Object.values(nextCanAssignments)]);
           return;
         }
         timer = window.setTimeout(poll, 650);
@@ -322,7 +322,7 @@ export default function Home() {
     await stopMotion(); setError(null); setSerialAssignments({}); setCanAssignments({}); setMotionPorts([]);
     if (savedModel && savedProfile && hardwareSlots(savedProfile).length > 0) {
       const firstSlot = hardwareSlots(savedProfile)[0];
-      try { if (firstSlot) await startMotion(savedModel.id, [], firstSlot.kind); }
+      try { if (firstSlot) await startMotion(savedModel.id, []); }
       catch (motionError) { setError(motionError instanceof Error ? motionError.message : '机械臂识别启动失败'); }
     }
   }

@@ -286,7 +286,7 @@ class HardwareMotionSession:
 class PiperMotionDetector:
     """Passively watch Piper feedback without changing role or enabling motors."""
 
-    def __init__(self, interface: str, expected_kind: str) -> None:
+    def __init__(self, interface: str) -> None:
         from piper_sdk import C_PiperInterface_V2, LogLevel
 
         self.arm = C_PiperInterface_V2(
@@ -295,8 +295,7 @@ class PiperMotionDetector:
             can_auto_init=True,
             logger_level=LogLevel.WARNING,
         )
-        self.expected_kind = expected_kind
-        self.last_positions: dict[int, int] = {}
+        self.last_positions: dict[str, dict[int, int]] = {}
 
     def start(self, timeout_s: float = 2.0) -> None:
         self.arm.ConnectPort(can_init=True, piper_init=False)
@@ -309,27 +308,30 @@ class PiperMotionDetector:
             time.sleep(0.02)
         raise RuntimeError("未能读取 PiperX 关节反馈")
 
-    def _read_positions(self) -> dict[int, int]:
+    def _read_positions(self) -> dict[str, dict[int, int]]:
         feedback = self.arm.GetArmJointMsgs()
         control = self.arm.GetArmJointCtrl()
-        if self.expected_kind == "teleoperator":
-            message = control
-            state = message.joint_ctrl
-        else:
-            if control.time_stamp > 0:
-                return {}
-            message = feedback
-            state = message.joint_state
-        if message.time_stamp <= 0:
-            return {}
-        return {
-            index: int(getattr(state, f"joint_{index}"))
-            for index in DEFAULT_MOTOR_IDS
-        }
+        positions = {}
+        for source, message, state in (
+            ("feedback", feedback, feedback.joint_state),
+            ("control", control, control.joint_ctrl),
+        ):
+            if message.time_stamp > 0:
+                positions[source] = {
+                    index: int(getattr(state, f"joint_{index}"))
+                    for index in DEFAULT_MOTOR_IDS
+                }
+        return positions
 
     def poll(self) -> dict[str, Any]:
         current = self._read_positions()
-        delta = detect_motion(self.last_positions, current)
+        delta = max(
+            (
+                detect_motion(self.last_positions.get(source, {}), positions)
+                for source, positions in current.items()
+            ),
+            default=0,
+        )
         if current:
             self.last_positions = current
         return {"delta": delta, "moved": delta > PIPER_MOTION_THRESHOLD}
@@ -339,16 +341,15 @@ class PiperMotionDetector:
 
 
 class PiperMotionSession:
-    def __init__(self, candidates: list[dict[str, Any]], expected_kind: str) -> None:
+    def __init__(self, candidates: list[dict[str, Any]]) -> None:
         self._candidates = [dict(candidate) for candidate in candidates]
-        self._expected_kind = expected_kind
         self._detectors: dict[str, PiperMotionDetector] = {}
         self._active_id = ""
 
     def start(self) -> int:
         for candidate in self._candidates:
             stable_id = str(candidate["stable_id"])
-            detector = PiperMotionDetector(str(candidate["device"]), self._expected_kind)
+            detector = PiperMotionDetector(str(candidate["device"]))
             try:
                 detector.start()
             except (ImportError, OSError, RuntimeError, ValueError) as error:

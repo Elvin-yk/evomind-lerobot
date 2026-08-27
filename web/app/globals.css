@@ -129,7 +129,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .identify-slot { display: grid; min-height: 58px; grid-template-columns: 28px 150px minmax(0, 1fr); align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
 .identify-slot:first-child { border-top: 1px solid var(--line); }
 .identify-slot strong { font-size: 14px; font-weight: 550; }
-.identify-slot small { color: var(--muted); font-size: 13px; }
+.identify-slot small { min-width: 0; color: var(--muted); overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
 .identify-dot { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #ddd; border-radius: 50%; color: #fff; }
 .identify-dot.complete { border-color: #000; background: #000; }
 .identify-prompt { color: var(--muted); font-size: 13px; }
@@ -414,7 +414,9 @@ code { font-family: var(--font-geist-mono), monospace; }
   .shell.is-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
   main { width: calc(100% - 32px); }
   .device-category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .device-config-section, .identify-section { grid-template-columns: 160px minmax(0, 1fr); }
+  .device-config-section { grid-template-columns: 160px minmax(0, 1fr); }
+  .identify-section { grid-template-columns: 1fr; }
+  .identify-slot { grid-template-columns: 28px minmax(80px, 110px) minmax(0, 1fr); }
   .data-list-head, .data-row { grid-template-columns: minmax(120px, 1fr) 110px minmax(160px, 1.5fr) 70px; }
   .feetech-toolbar { grid-template-columns: 1fr 150px; }
   .feetech-toolbar > button { grid-column: 2; }

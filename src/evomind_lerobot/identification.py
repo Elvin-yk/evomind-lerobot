@@ -48,15 +48,13 @@ def _socketcan_candidates(excluded_ids: set[str]) -> list[dict[str, Any]]:
     ]
 
 
-def start_motion_identification(
-    model: str, excluded_ids: set[str], expected_kind: str = "robot"
-) -> dict[str, Any]:
+def start_motion_identification(model: str, excluded_ids: set[str]) -> dict[str, Any]:
     global _motion_session
     with _motion_lock:
         if _motion_session is not None:
             _motion_session.stop()
         session = (
-            PiperMotionSession(_socketcan_candidates(excluded_ids), expected_kind)
+            PiperMotionSession(_socketcan_candidates(excluded_ids))
             if model.strip().lower().replace("-", "").replace("_", "") == "piperx"
             else HardwareMotionSession(_serial_candidates(excluded_ids), model)
         )

@@ -71,7 +71,6 @@ from evomind_lerobot.workspace import workspace_inventory
 class MotionStartRequest(BaseModel):
     model: str = Field(min_length=1)
     excluded_ids: list[str] = Field(default_factory=list)
-    kind: str = Field(default="robot", pattern="^(robot|teleoperator)$")
 
 
 class CalibrationStartRequest(BaseModel):
@@ -476,7 +475,6 @@ def create_app():
             start_motion_identification,
             body.model,
             set(body.excluded_ids),
-            body.kind,
         )
 
     @app.get("/api/identify/motion/poll")
