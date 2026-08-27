@@ -108,6 +108,40 @@ def _video_aliases() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     return aliases[0], aliases[1]
 
 
+def _usb_device_parent(path: Path) -> Path:
+    return next(
+        (
+            candidate
+            for candidate in (path, *path.parents)
+            if (candidate / "idVendor").exists() and (candidate / "idProduct").exists()
+        ),
+        path,
+    )
+
+
+def _realsense_serials_by_usb_device() -> dict[str, str]:
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        return {}
+
+    serials = {}
+    try:
+        devices = rs.context().query_devices()
+    except RuntimeError:
+        return serials
+    for device in devices:
+        if not (
+            device.supports(rs.camera_info.physical_port)
+            and device.supports(rs.camera_info.serial_number)
+        ):
+            continue
+        physical_port = Path(device.get_info(rs.camera_info.physical_port))
+        usb_device = _usb_device_parent(physical_port)
+        serials[str(usb_device)] = device.get_info(rs.camera_info.serial_number)
+    return serials
+
+
 def _camera_capture_path(
     resolved_video: str,
     by_id: dict[str, list[str]],
@@ -138,14 +172,7 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
         # interfaces (for example, RealSense depth and RGB endpoints). Group
         # those interfaces by their nearest USB device parent instead of
         # presenting them as separate cameras.
-        usb_device = next(
-            (
-                candidate
-                for candidate in (device_path, *device_path.parents)
-                if (candidate / "idVendor").exists() and (candidate / "idProduct").exists()
-            ),
-            device_path,
-        )
+        usb_device = _usb_device_parent(device_path)
         key = str(usb_device)
         resolved_video = str(Path(video["path"]).resolve())
         score, capture_path = _camera_capture_path(resolved_video, by_id, by_path)
@@ -163,8 +190,9 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
         camera["paths"].append(video["path"])
         camera["candidates"].append((score, capture_path, resolved_video))
 
+    realsense_serials = _realsense_serials_by_usb_device()
     result = []
-    for camera in cameras.values():
+    for usb_device, camera in cameras.items():
         candidates = sorted(camera.pop("candidates"), key=lambda item: (item[0], item[1]))
         selected_path = candidates[0][1]
         capture_paths = list(
@@ -173,13 +201,17 @@ def _camera_devices(video_devices: list[dict[str, str]]) -> list[dict[str, Any]]
                 + [candidate[2] for candidate in candidates]
             )
         )
+        driver = "intelrealsense" if "realsense" in camera["name"].lower() else "opencv"
+        serial_number = camera.pop("serial_number")
+        if driver == "intelrealsense":
+            serial_number = realsense_serials.get(usb_device, "")
         result.append(
             {
                 "id": selected_path,
                 "name": camera["name"],
                 "path": selected_path,
-                "driver": "intelrealsense" if "realsense" in camera["name"].lower() else "opencv",
-                "serial_number": camera.pop("serial_number"),
+                "driver": driver,
+                "serial_number": serial_number,
                 "paths": camera["paths"],
                 "capture_paths": capture_paths,
             }
