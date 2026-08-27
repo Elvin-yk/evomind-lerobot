@@ -92,6 +92,9 @@ class OpenCVCamera(Camera):
         ```
     """
 
+    _MAX_CONNECT_ATTEMPTS = 3
+    _CONNECT_RETRY_DELAY_S = 0.5
+
     def __init__(self, config: OpenCVCameraConfig):
         """
         Initializes the OpenCVCamera instance.
@@ -141,28 +144,8 @@ class OpenCVCamera(Camera):
         """Checks if the camera is currently connected and opened."""
         return isinstance(self.videocapture, cv2.VideoCapture) and self.videocapture.isOpened()
 
-    @check_if_already_connected
-    def connect(self, warmup: bool = True) -> None:
-        """
-        Connects to the OpenCV camera specified in the configuration.
-
-        Initializes the OpenCV VideoCapture object, sets desired camera properties
-        (FPS, width, height), starts the background reading thread and performs initial checks.
-
-        Args:
-            warmup (bool): If True, waits at connect() time until at least one valid frame
-                           has been captured by the background thread. Defaults to True.
-
-        Raises:
-            DeviceAlreadyConnectedError: If the camera is already connected.
-            ConnectionError: If the specified camera index/path is not found or fails to open.
-            RuntimeError: If the camera opens but fails to apply requested settings.
-        """
-
-        # Use 1 thread for OpenCV operations to avoid potential conflicts or
-        # blocking in multi-threaded applications, especially during data collection.
-        cv2.setNumThreads(1)
-
+    def _connect_once(self, warmup: bool) -> None:
+        """Open and warm up the capture once, releasing all resources on failure."""
         self.videocapture = cv2.VideoCapture(self.index_or_path, self.backend)
 
         if not self.videocapture.isOpened():
@@ -192,7 +175,47 @@ class OpenCVCamera(Camera):
             self._reset_connection_settings()
             raise
 
-        logger.info(f"{self} connected.")
+    @check_if_already_connected
+    def connect(self, warmup: bool = True) -> None:
+        """
+        Connects to the OpenCV camera specified in the configuration.
+
+        Initializes the OpenCV VideoCapture object, sets desired camera properties
+        (FPS, width, height), starts the background reading thread and performs initial checks.
+
+        Args:
+            warmup (bool): If True, waits at connect() time until at least one valid frame
+                           has been captured by the background thread. Defaults to True.
+
+        Raises:
+            DeviceAlreadyConnectedError: If the camera is already connected.
+            ConnectionError: If the specified camera index/path is not found or fails to open.
+            RuntimeError: If the camera opens but fails to apply requested settings.
+        """
+
+        # Use 1 thread for OpenCV operations to avoid potential conflicts or
+        # blocking in multi-threaded applications, especially during data collection.
+        cv2.setNumThreads(1)
+
+        attempts = self._MAX_CONNECT_ATTEMPTS if warmup else 1
+        last_error: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                self._connect_once(warmup)
+            except (ConnectionError, TimeoutError) as error:
+                last_error = error
+                if attempt == attempts:
+                    break
+                logger.warning(f"{self} warmup failed (attempt {attempt}/{attempts}); retrying.")
+                time.sleep(self._CONNECT_RETRY_DELAY_S)
+            else:
+                logger.info(f"{self} connected.")
+                return
+
+        if last_error is None:
+            raise RuntimeError(f"{self} failed to connect without reporting an error.")
+        raise last_error
 
     @check_if_not_connected
     def _configure_capture_settings(self) -> None:
