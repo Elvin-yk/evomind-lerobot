@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react';
 export type DeviceCategoryId = 'arm' | 'hand' | 'humanoid' | 'mobile';
 export type ArmMode = 'single' | 'dual';
 export type CameraKind = 'wrist' | 'environment';
+export type DeviceTransport = 'serial' | 'socketcan';
 export type WristSide = 'left' | 'right';
 export type CreateStepId = 'category' | 'model' | 'hardware';
 
@@ -14,6 +15,8 @@ export type SystemProfile = {
   teleoperator_type: string | null;
   robot_ports: number | null;
   teleoperator_ports: number | null;
+  robot_transport: DeviceTransport | null;
+  teleoperator_transport: DeviceTransport | null;
 };
 
 export type DeviceCategory = {
@@ -66,6 +69,7 @@ export const createSteps: { id: CreateStepId; label: string }[] = [
 
 const modelDefinitions: Omit<DeviceModelOption, 'variants'>[] = [
   { id: 'so101', title: 'SO-101', category: 'arm', description: '桌面机械臂', image: '/devices/so101.webp', imageAlt: 'SO-101 机械臂' },
+  { id: 'piperx', title: 'PiperX', category: 'arm', description: 'SocketCAN 工业机械臂' },
   { id: 'openarm', title: 'OpenArm', category: 'arm', description: '开源机械臂', image: '/devices/openarm.png', imageAlt: 'OpenArm 机械臂' },
   { id: 'rebot', title: 'reBot', category: 'arm', description: '桌面机械臂', image: '/devices/rebot.jpg', imageAlt: 'reBot B601-DM 机械臂' },
   { id: 'omx', title: 'OMX', category: 'arm', description: '桌面机械臂', image: '/devices/omx.webp', imageAlt: 'OMX 机械臂' },
@@ -80,6 +84,7 @@ const modelDefinitions: Omit<DeviceModelOption, 'variants'>[] = [
 
 const groupedProfiles: Record<string, Partial<Record<ArmMode, string>>> = {
   so101: { single: 'so101', dual: 'bi_so' },
+  piperx: { single: 'piperx', dual: 'bi_piperx' },
   openarm: { single: 'openarm', dual: 'bi_openarm' },
   rebot: { single: 'rebot', dual: 'bi_rebot' },
   omx: { single: 'omx' },

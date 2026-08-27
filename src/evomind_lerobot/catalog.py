@@ -42,6 +42,8 @@ def _profile(
     teleoperator_type: str | None,
     robot_ports: int | None,
     teleoperator_ports: int | None,
+    robot_transport: str | None = "serial",
+    teleoperator_transport: str | None = "serial",
 ) -> dict[str, Any]:
     return {
         "id": profile_id,
@@ -50,6 +52,8 @@ def _profile(
         "teleoperator_type": teleoperator_type,
         "robot_ports": robot_ports,
         "teleoperator_ports": teleoperator_ports,
+        "robot_transport": robot_transport if robot_ports else None,
+        "teleoperator_transport": teleoperator_transport if teleoperator_ports else None,
     }
 
 
@@ -68,6 +72,35 @@ def _system_profiles(robots: set[str], teleoperators: set[str]) -> list[dict[str
                 teleoperator_type,
                 robot_ports,
                 teleoperator_ports,
+            )
+        )
+        covered.add(robot_type)
+
+    piper_definitions = (
+        ("piperx", "PiperX", "piperx_follower", "piperx_leader", 1, 1),
+        (
+            "bi_piperx",
+            "PiperX 双臂",
+            "bi_piperx_follower",
+            "bi_piperx_leader",
+            2,
+            2,
+        ),
+    )
+    for definition in piper_definitions:
+        profile_id, label, robot_type, teleoperator_type, robot_ports, teleoperator_ports = definition
+        if robot_type not in robots or teleoperator_type not in teleoperators:
+            continue
+        profiles.append(
+            _profile(
+                profile_id,
+                label,
+                robot_type,
+                teleoperator_type,
+                robot_ports,
+                teleoperator_ports,
+                "socketcan",
+                "socketcan",
             )
         )
         covered.add(robot_type)

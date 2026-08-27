@@ -16,7 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from evomind_lerobot.collection_store import CollectionStore, CollectionStoreError
 from evomind_lerobot.device_config import (
+    CanBinding,
     DeviceConfiguration,
+    SerialBinding,
     calibration_path,
     load_device_configuration,
     runtime_id,
@@ -138,8 +140,22 @@ def _camera_key(alias: str, side: str) -> str:
     return alias.removeprefix(prefix) if side in {"left", "right"} else alias
 
 
+def _device_bindings(
+    configuration: DeviceConfiguration, kind: str
+) -> list[SerialBinding | CanBinding]:
+    return [
+        binding
+        for binding in [*configuration.serial_bindings, *configuration.can_bindings]
+        if binding.kind == kind
+    ]
+
+
+def _binding_port(binding: SerialBinding | CanBinding) -> str:
+    return binding.port if isinstance(binding, SerialBinding) else binding.id
+
+
 def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: bool) -> dict[str, Any]:
-    bindings = [item for item in configuration.serial_bindings if item.kind == "robot"]
+    bindings = _device_bindings(configuration, "robot")
     payload: dict[str, Any] = {
         "type": configuration.robot_type,
         "id": runtime_id(configuration, "robot"),
@@ -148,21 +164,25 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
     camera_bindings = configuration.camera_bindings if cameras else []
     dual = {binding.side for binding in bindings} >= {"left", "right"}
     if dual:
+        socketcan = all(isinstance(binding, CanBinding) for binding in bindings)
         for side in ("left", "right"):
             binding = next(item for item in bindings if item.side == side)
-            side_cameras = {
-                _camera_key(camera.alias, side): _camera_config(camera.port, fps)
-                for camera in camera_bindings
-                if camera.side == side
+            side_cameras = {} if socketcan else {
+                    _camera_key(camera.alias, side): _camera_config(camera.port, fps)
+                    for camera in camera_bindings
+                    if camera.side == side
+                }
+            payload[f"{side}_arm_config"] = {
+                "port": _binding_port(binding),
+                "cameras": side_cameras,
             }
-            payload[f"{side}_arm_config"] = {"port": binding.port, "cameras": side_cameras}
         payload["cameras"] = {
             camera.alias: _camera_config(camera.port, fps)
             for camera in camera_bindings
-            if camera.side == "single"
+            if socketcan or camera.side == "single"
         }
     elif bindings:
-        payload["port"] = bindings[0].port
+        payload["port"] = _binding_port(bindings[0])
         payload["cameras"] = {camera.alias: _camera_config(camera.port, fps) for camera in camera_bindings}
     return payload
 
@@ -170,7 +190,7 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
 def _teleoperator_payload(configuration: DeviceConfiguration) -> dict[str, Any] | None:
     if configuration.teleoperator_type is None:
         return None
-    bindings = [item for item in configuration.serial_bindings if item.kind == "teleoperator"]
+    bindings = _device_bindings(configuration, "teleoperator")
     payload: dict[str, Any] = {
         "type": configuration.teleoperator_type,
         "id": runtime_id(configuration, "teleoperator"),
@@ -179,20 +199,25 @@ def _teleoperator_payload(configuration: DeviceConfiguration) -> dict[str, Any] 
     if dual:
         for side in ("left", "right"):
             binding = next(item for item in bindings if item.side == side)
-            payload[f"{side}_arm_config"] = {"port": binding.port}
+            payload[f"{side}_arm_config"] = {"port": _binding_port(binding)}
     elif bindings:
-        payload["port"] = bindings[0].port
+        payload["port"] = _binding_port(bindings[0])
     return payload
 
 
 def _configuration() -> DeviceConfiguration:
     configuration = load_device_configuration()
-    if configuration is None or not configuration.serial_bindings:
+    if configuration is None or not (configuration.serial_bindings or configuration.can_bindings):
         raise ValueError("请先完成设备识别")
     return configuration
 
 
 def _require_calibration(configuration: DeviceConfiguration, kind: str) -> None:
+    configured_type = (
+        configuration.robot_type if kind == "robot" else configuration.teleoperator_type or ""
+    )
+    if "piperx" in configured_type:
+        return
     missing = [
         binding.alias
         for binding in configuration.serial_bindings

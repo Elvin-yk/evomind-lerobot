@@ -12,7 +12,8 @@ import {
   armModeLabel, cameraDisplayLabel, cameraKindLabel, cameraSlotId, canAddCameraKind,
   categories, createSteps, defaultCameras, modelsFromProfiles, nextCameraDraft,
   type ArmMode, type CameraDraft, type CameraKind, type CreateStepId,
-  type DeviceCategory, type DeviceCategoryId, type DeviceModelOption, type SystemProfile,
+  type DeviceCategory, type DeviceCategoryId, type DeviceModelOption, type DeviceTransport,
+  type SystemProfile,
 } from './deviceCatalog';
 
 type RuntimeEvent = {
@@ -23,9 +24,10 @@ type RuntimeStatus = { lerobot_version: string | null; runtime: { hostname: stri
 type WorkflowRuntime = { running: boolean; job_id: string | null; operation: string | null; event: RuntimeEvent | null };
 type Catalog = { systems: SystemProfile[] };
 type SerialDevice = { id: string; path: string; device: string };
+type CanDevice = { id: string; serial_number: string; interface: string; state: string; up: boolean; bitrate: number | null };
 type CameraDevice = { id: string; name: string; path: string; paths: string[] };
 type CameraPreview = CameraDevice & { preview_data_url: string };
-type HardwareInventory = { serial: SerialDevice[]; cameras: CameraDevice[] };
+type HardwareInventory = { serial: SerialDevice[]; socketcan: CanDevice[]; cameras: CameraDevice[] };
 type Side = 'single' | 'left' | 'right';
 type SerialKind = 'robot' | 'teleoperator';
 type IdentificationScope = 'hardware' | 'sensors' | 'all';
@@ -33,13 +35,14 @@ type PageId = 'device' | 'maintenance' | 'calibration' | 'teleoperation' | 'reco
 type SerialBinding = {
   id: string; port: string; alias: string; kind: SerialKind; side: Side;
 };
+type CanBinding = { id: string; alias: string; kind: SerialKind; side: Side };
 type CameraBinding = { id: string; port: string; alias: string; side: Side };
 type CameraSlot = { alias: string; kind: CameraKind; side: Side };
 type DeviceConfiguration = {
   profile_id: string; robot_type: string; teleoperator_type: string | null;
-  camera_slots: CameraSlot[]; serial_bindings: SerialBinding[]; camera_bindings: CameraBinding[];
+  camera_slots: CameraSlot[]; serial_bindings: SerialBinding[]; can_bindings: CanBinding[]; camera_bindings: CameraBinding[];
 };
-type SerialSlot = { id: string; label: string; kind: SerialKind; side: Side };
+type HardwareSlot = { id: string; label: string; kind: SerialKind; side: Side; transport: DeviceTransport };
 type MotionPort = { stable_id: string; device: string; motor_ids: number[]; delta: number; moved: boolean; motion_error: string };
 type MotionStartResult = { status: string; readable_count: number; ports: MotionPort[] };
 type FeetechMotor = { id: number; model: string; model_number: number; position: number; velocity: number; load: number; voltage: number; temperature: number; current: number | null; torque_enabled: boolean; moving: boolean };
@@ -97,25 +100,29 @@ async function postJson<T>(url: string, body: unknown = {}): Promise<T> {
   return requestJson<T>(url, 'POST', body);
 }
 
-function serialSlots(profile: SystemProfile | undefined): SerialSlot[] {
+function hardwareSlots(profile: SystemProfile | undefined): HardwareSlot[] {
   if (!profile) return [];
+  const slot = (id: string, label: string, kind: SerialKind, side: Side): HardwareSlot => ({
+    id, label, kind, side,
+    transport: (kind === 'robot' ? profile.robot_transport : profile.teleoperator_transport) ?? 'serial',
+  });
   if (profile.robot_ports === 2 && profile.teleoperator_ports === 2) {
     return [
-      { id: 'left_leader_arm', label: '左主臂', kind: 'teleoperator', side: 'left' },
-      { id: 'left_follower_arm', label: '左从臂', kind: 'robot', side: 'left' },
-      { id: 'right_leader_arm', label: '右主臂', kind: 'teleoperator', side: 'right' },
-      { id: 'right_follower_arm', label: '右从臂', kind: 'robot', side: 'right' },
+      slot('left_leader_arm', '左主臂', 'teleoperator', 'left'),
+      slot('left_follower_arm', '左从臂', 'robot', 'left'),
+      slot('right_leader_arm', '右主臂', 'teleoperator', 'right'),
+      slot('right_follower_arm', '右从臂', 'robot', 'right'),
     ];
   }
   if (profile.robot_ports === 1 && profile.teleoperator_ports === 1) {
     return [
-      { id: 'leader_arm', label: '主臂', kind: 'teleoperator', side: 'single' },
-      { id: 'follower_arm', label: '从臂', kind: 'robot', side: 'single' },
+      slot('leader_arm', '主臂', 'teleoperator', 'single'),
+      slot('follower_arm', '从臂', 'robot', 'single'),
     ];
   }
-  const slots: SerialSlot[] = [];
-  for (let index = 0; index < (profile.teleoperator_ports ?? 0); index += 1) slots.push({ id: `teleoperator_${index + 1}`, label: `遥操作设备 ${index + 1}`, kind: 'teleoperator', side: 'single' });
-  for (let index = 0; index < (profile.robot_ports ?? 0); index += 1) slots.push({ id: `robot_${index + 1}`, label: `机器人接口 ${index + 1}`, kind: 'robot', side: 'single' });
+  const slots: HardwareSlot[] = [];
+  for (let index = 0; index < (profile.teleoperator_ports ?? 0); index += 1) slots.push(slot(`teleoperator_${index + 1}`, `遥操作设备 ${index + 1}`, 'teleoperator', 'single'));
+  for (let index = 0; index < (profile.robot_ports ?? 0); index += 1) slots.push(slot(`robot_${index + 1}`, `机器人接口 ${index + 1}`, 'robot', 'single'));
   return slots;
 }
 
@@ -125,8 +132,12 @@ function cameraDraftsFromConfiguration(configuration: DeviceConfiguration): Came
 
 function isReady(configuration: DeviceConfiguration | null, profile: SystemProfile | undefined) {
   if (!configuration || !profile) return false;
-  const requiredSerial = (profile.robot_ports ?? 0) + (profile.teleoperator_ports ?? 0);
-  return configuration.serial_bindings.length === requiredSerial && configuration.camera_bindings.length === configuration.camera_slots.length;
+  const slots = hardwareSlots(profile);
+  const requiredSerial = slots.filter((slot) => slot.transport === 'serial').length;
+  const requiredCan = slots.filter((slot) => slot.transport === 'socketcan').length;
+  return configuration.serial_bindings.length === requiredSerial
+    && configuration.can_bindings.length === requiredCan
+    && configuration.camera_bindings.length === configuration.camera_slots.length;
 }
 
 export default function Home() {
@@ -146,6 +157,7 @@ export default function Home() {
   const [cameras, setCameras] = useState<CameraDraft[]>([]);
   const [pendingCameraKind, setPendingCameraKind] = useState<CameraKind>('environment');
   const [serialAssignments, setSerialAssignments] = useState<Record<string, string>>({});
+  const [canAssignments, setCanAssignments] = useState<Record<string, string>>({});
   const [cameraAssignments, setCameraAssignments] = useState<Record<string, string>>({});
   const [inventory, setInventory] = useState<HardwareInventory | null>(null);
   const [cameraPreviews, setCameraPreviews] = useState<CameraPreview[]>([]);
@@ -179,6 +191,7 @@ export default function Home() {
         setCategoryId(hydratedModel.category); setModelId(hydratedModel.id); setMode(variant.mode);
         setCameras(cameraDraftsFromConfiguration(configuration));
         setSerialAssignments(Object.fromEntries(configuration.serial_bindings.map((binding) => [binding.alias, binding.id])));
+        setCanAssignments(Object.fromEntries(configuration.can_bindings.map((binding) => [binding.alias, binding.id])));
       })
       .catch(() => setError('无法连接本机运行时'));
   }, []);
@@ -222,7 +235,7 @@ export default function Home() {
     if (!selectedProfile) return;
     setBusy(true); setError(null);
     try {
-      const configuration = await requestJson<DeviceConfiguration>('/api/config', 'PUT', { profile_id: selectedProfile.id, robot_type: selectedProfile.robot_type, teleoperator_type: selectedProfile.teleoperator_type, camera_slots: cameraSlotsFromDrafts(), serial_bindings: [], camera_bindings: [] });
+      const configuration = await requestJson<DeviceConfiguration>('/api/config', 'PUT', { profile_id: selectedProfile.id, robot_type: selectedProfile.robot_type, teleoperator_type: selectedProfile.teleoperator_type, camera_slots: cameraSlotsFromDrafts(), serial_bindings: [], can_bindings: [], camera_bindings: [] });
       setSaved(configuration); setEditing(false); setActivePage('device'); setIdentifying(false);
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : '保存失败'); }
     finally { setBusy(false); }
@@ -234,10 +247,10 @@ export default function Home() {
     finally { setMotionActive(false); setMotionStarting(false); }
   }, [motionActive, motionStarting]);
 
-  const startMotion = useCallback(async (model: string, excludedIds: string[]) => {
+  const startMotion = useCallback(async (model: string, excludedIds: string[], kind: SerialKind) => {
     setMotionStarting(true);
     try {
-      const result = await postJson<MotionStartResult>('/api/identify/motion/start', { model, excluded_ids: excludedIds });
+      const result = await postJson<MotionStartResult>('/api/identify/motion/start', { model, excluded_ids: excludedIds, kind });
       setMotionPorts(result.ports);
       if (result.readable_count === 0) throw new Error(result.ports.map((port) => port.motion_error).find(Boolean) || '未发现可识别的机械臂');
       setMotionActive(true);
@@ -253,6 +266,7 @@ export default function Home() {
   async function beginIdentification(scope: IdentificationScope = 'all') {
     if (!saved || !savedModel || !savedProfile) return;
     const preservedSerialAssignments = Object.fromEntries(saved.serial_bindings.map((binding) => [binding.alias, binding.id]));
+    const preservedCanAssignments = Object.fromEntries(saved.can_bindings.map((binding) => [binding.alias, binding.id]));
     const preservedCameraAssignments = Object.fromEntries(cameras.flatMap((camera, index) => {
       const slot = saved.camera_slots[index];
       const binding = saved.camera_bindings.find((item) => item.alias === slot?.alias);
@@ -260,35 +274,39 @@ export default function Home() {
     }));
     setBusy(true); setError(null); setIdentificationScope(scope);
     setSerialAssignments(scope === 'sensors' ? preservedSerialAssignments : {});
+    setCanAssignments(scope === 'sensors' ? preservedCanAssignments : {});
     setCameraAssignments(scope === 'hardware' ? preservedCameraAssignments : {});
     setMotionPorts([]); setCameraPreviews([]); setIdentifying(true);
     try {
       const nextInventory = await readJson<HardwareInventory>('/api/devices');
       setInventory(nextInventory);
       if (scope !== 'hardware') setCameraPreviews(await postJson<CameraPreview[]>('/api/identify/cameras'));
-      if (scope !== 'sensors' && serialSlots(savedProfile).length > 0) await startMotion(savedModel.id, []);
+      const firstSlot = hardwareSlots(savedProfile)[0];
+      if (scope !== 'sensors' && firstSlot) await startMotion(savedModel.id, [], firstSlot.kind);
     } catch (identifyError) { setError(identifyError instanceof Error ? identifyError.message : '设备识别启动失败'); }
     finally { setBusy(false); }
   }
 
   useEffect(() => {
     if (!identifying || activePage !== 'device' || !motionActive) return;
-    const pendingSlots = serialSlots(savedProfile);
+    const pendingSlots = hardwareSlots(savedProfile);
     let cancelled = false; let timer = 0;
     const poll = async () => {
       try {
         const result = await readJson<{ ports: MotionPort[] }>('/api/identify/motion/poll');
         if (cancelled) return;
         setMotionPorts(result.ports);
-        const usedIds = Object.values(serialAssignments);
+        const usedIds = [...Object.values(serialAssignments), ...Object.values(canAssignments)];
         const moved = result.ports.find((port) => port.moved && !usedIds.includes(port.stable_id));
-        const pendingSlot = pendingSlots.find((slot) => !serialAssignments[slot.id]);
+        const pendingSlot = pendingSlots.find((slot) => !(slot.transport === 'socketcan' ? canAssignments[slot.id] : serialAssignments[slot.id]));
         if (moved && pendingSlot) {
           await postJson('/api/identify/motion/stop');
           if (cancelled) return;
-          const nextAssignments = { ...serialAssignments, [pendingSlot.id]: moved.stable_id };
-          setMotionActive(false); setSerialAssignments(nextAssignments);
-          if (pendingSlots.some((slot) => !nextAssignments[slot.id]) && savedModel) await startMotion(savedModel.id, Object.values(nextAssignments));
+          const nextSerialAssignments = pendingSlot.transport === 'serial' ? { ...serialAssignments, [pendingSlot.id]: moved.stable_id } : serialAssignments;
+          const nextCanAssignments = pendingSlot.transport === 'socketcan' ? { ...canAssignments, [pendingSlot.id]: moved.stable_id } : canAssignments;
+          setMotionActive(false); setSerialAssignments(nextSerialAssignments); setCanAssignments(nextCanAssignments);
+          const nextSlot = pendingSlots.find((slot) => !(slot.transport === 'socketcan' ? nextCanAssignments[slot.id] : nextSerialAssignments[slot.id]));
+          if (nextSlot && savedModel) await startMotion(savedModel.id, [...Object.values(nextSerialAssignments), ...Object.values(nextCanAssignments)], nextSlot.kind);
           return;
         }
         timer = window.setTimeout(poll, 650);
@@ -298,27 +316,35 @@ export default function Home() {
     };
     timer = window.setTimeout(poll, 350);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [activePage, identifying, motionActive, savedModel, savedProfile, serialAssignments, startMotion]);
+  }, [activePage, canAssignments, identifying, motionActive, savedModel, savedProfile, serialAssignments, startMotion]);
 
   async function restartMotionIdentification() {
-    await stopMotion(); setError(null); setSerialAssignments({}); setMotionPorts([]);
-    if (savedModel && savedProfile && serialSlots(savedProfile).length > 0) {
-      try { await startMotion(savedModel.id, []); }
+    await stopMotion(); setError(null); setSerialAssignments({}); setCanAssignments({}); setMotionPorts([]);
+    if (savedModel && savedProfile && hardwareSlots(savedProfile).length > 0) {
+      const firstSlot = hardwareSlots(savedProfile)[0];
+      try { if (firstSlot) await startMotion(savedModel.id, [], firstSlot.kind); }
       catch (motionError) { setError(motionError instanceof Error ? motionError.message : '机械臂识别启动失败'); }
     }
   }
 
   async function saveIdentification() {
     if (!saved || !savedProfile || !inventory) return;
-    const pendingSlots = serialSlots(savedProfile);
-    if (pendingSlots.some((slot) => !serialAssignments[slot.id])) return setError('请完成机械臂识别');
+    const pendingSlots = hardwareSlots(savedProfile);
+    const serialPendingSlots = pendingSlots.filter((slot) => slot.transport === 'serial');
+    const canPendingSlots = pendingSlots.filter((slot) => slot.transport === 'socketcan');
+    if (serialPendingSlots.some((slot) => !serialAssignments[slot.id]) || canPendingSlots.some((slot) => !canAssignments[slot.id])) return setError('请完成机械臂识别');
     if (cameras.some((camera) => !cameraAssignments[camera.id])) return setError('请完成摄像头识别');
     setBusy(true);
     try {
-    const serialBindings = identificationScope === 'sensors' ? saved.serial_bindings : pendingSlots.map((slot) => {
+    const serialBindings = identificationScope === 'sensors' ? saved.serial_bindings : serialPendingSlots.map((slot) => {
         const device = inventory.serial.find((item) => item.id === serialAssignments[slot.id]);
         if (!device) throw new Error(`未找到${slot.label}`);
         return { id: device.id, port: device.path, alias: slot.id, kind: slot.kind, side: slot.side };
+      });
+    const canBindings = identificationScope === 'sensors' ? saved.can_bindings : canPendingSlots.map((slot) => {
+        const device = inventory.socketcan.find((item) => item.id === canAssignments[slot.id]);
+        if (!device) throw new Error(`未找到${slot.label}`);
+        return { id: device.id, alias: slot.id, kind: slot.kind, side: slot.side };
       });
     const cameraBindings = identificationScope === 'hardware' ? saved.camera_bindings : cameras.map((camera, index) => {
         const device = inventory.cameras.find((item) => item.id === cameraAssignments[camera.id]);
@@ -326,7 +352,7 @@ export default function Home() {
         const slot = saved.camera_slots[index];
         return { id: device.id, port: device.path, alias: slot.alias, side: slot.side };
       });
-      const configuration = await requestJson<DeviceConfiguration>('/api/config', 'PUT', { ...saved, serial_bindings: serialBindings, camera_bindings: cameraBindings });
+      const configuration = await requestJson<DeviceConfiguration>('/api/config', 'PUT', { ...saved, serial_bindings: serialBindings, can_bindings: canBindings, camera_bindings: cameraBindings });
       setSaved(configuration); await stopMotion(); setIdentifying(false); setIdentificationScope('all');
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : '保存失败'); }
     finally { setBusy(false); }
@@ -360,7 +386,7 @@ export default function Home() {
     <main>
       <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{(['teleoperation', 'recording', 'datasets', 'inference'] as PageId[]).includes(activePage) ? <div className="header-workflow-status" ref={setWorkflowStatusSlot} /> : activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <span>⌄</span></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
       {error && <div className="error">{error}</div>}
-      {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={serialSlots(savedProfile)} cameras={cameras} mode={mode} showHardware={identificationScope !== 'sensors'} showSensors={identificationScope !== 'hardware'} serialAssignments={serialAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
+      {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={hardwareSlots(savedProfile)} cameras={cameras} mode={mode} showHardware={identificationScope !== 'sensors'} showSensors={identificationScope !== 'hardware'} serialAssignments={serialAssignments} canAssignments={canAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
         <div className="device-setup-steps">{createSteps.map((item, index) => {
           const disabled = item.id === 'model' ? !selectedCategory : item.id === 'hardware' ? !selectedModel : false;
           return <button className={`device-setup-step ${item.id === step ? 'active' : ''}`} type="button" disabled={disabled} onClick={() => setStep(item.id)} key={item.id}><span>{index + 1}</span>{item.label}</button>;
@@ -391,15 +417,16 @@ function HardwareStep({ model, mode, cameras, pendingCameraKind, onModeChange, o
   </div>;
 }
 
-function IdentificationStep({ slots, cameras, mode, showHardware, showSensors, serialAssignments, cameraAssignments, cameraPreviews, motionPorts, motionStarting, cameraLoading, busy, onRestartMotion, onRefreshCameras, onCameraSelect, onSave }: { mode: ArmMode; slots: SerialSlot[]; cameras: CameraDraft[]; showHardware: boolean; showSensors: boolean; serialAssignments: Record<string, string>; cameraAssignments: Record<string, string>; cameraPreviews: CameraPreview[]; motionPorts: MotionPort[]; motionStarting: boolean; cameraLoading: boolean; busy: boolean; onRestartMotion: () => void; onRefreshCameras: () => void; onCameraSelect: (cameraId: string, deviceId: string) => void; onSave: () => void }) {
-  const currentSlot = slots.find((slot) => !serialAssignments[slot.id]);
+function IdentificationStep({ slots, cameras, mode, showHardware, showSensors, serialAssignments, canAssignments, cameraAssignments, cameraPreviews, motionPorts, motionStarting, cameraLoading, busy, onRestartMotion, onRefreshCameras, onCameraSelect, onSave }: { mode: ArmMode; slots: HardwareSlot[]; cameras: CameraDraft[]; showHardware: boolean; showSensors: boolean; serialAssignments: Record<string, string>; canAssignments: Record<string, string>; cameraAssignments: Record<string, string>; cameraPreviews: CameraPreview[]; motionPorts: MotionPort[]; motionStarting: boolean; cameraLoading: boolean; busy: boolean; onRestartMotion: () => void; onRefreshCameras: () => void; onCameraSelect: (cameraId: string, deviceId: string) => void; onSave: () => void }) {
+  const assignment = (slot: HardwareSlot) => slot.transport === 'socketcan' ? canAssignments[slot.id] : serialAssignments[slot.id];
+  const currentSlot = slots.find((slot) => !assignment(slot));
   const currentCamera = cameras.find((camera) => !cameraAssignments[camera.id]);
   const completed = !currentSlot && !currentCamera;
   const readablePorts = motionPorts.filter((port) => !port.motion_error).length;
   return <div className="identification-layout">
     {showHardware && slots.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>本体</h3><button className="text-button" type="button" onClick={onRestartMotion}>重新识别</button></div><div className="identify-slots">{slots.map((slot) => {
-      const identified = Boolean(serialAssignments[slot.id]); const active = currentSlot?.id === slot.id;
-      return <div className={`identify-slot ${active ? 'active' : ''}`} key={slot.id}><span className={`identify-dot ${identified ? 'complete' : ''}`}>{identified ? <Check size={14} /> : ''}</span><strong>{slot.label}</strong><small>{identified ? `已识别 · ${serialIdentity(serialAssignments[slot.id])}` : active ? motionStarting ? '正在连接' : readablePorts ? '请轻轻移动这只机械臂' : '没有可读取的机械臂' : '等待识别'}</small></div>;
+      const deviceId = assignment(slot); const identified = Boolean(deviceId); const active = currentSlot?.id === slot.id;
+      return <div className={`identify-slot ${active ? 'active' : ''}`} key={slot.id}><span className={`identify-dot ${identified ? 'complete' : ''}`}>{identified ? <Check size={14} /> : ''}</span><strong>{slot.label}</strong><small>{identified ? `已识别 · ${slot.transport === 'socketcan' ? deviceId : serialIdentity(deviceId)}` : active ? motionStarting ? '正在连接' : readablePorts ? '请轻轻移动这只机械臂' : '没有可读取的机械臂' : '等待识别'}</small></div>;
     })}</div></section>}
     {showSensors && cameras.length > 0 && <section className="identify-section"><div className="device-config-heading with-action"><h3>传感器</h3><button className="text-button inline-icon" type="button" onClick={onRefreshCameras} disabled={cameraLoading}><RefreshCw size={13} />{cameraLoading ? '读取中' : '重新识别'}</button></div>{currentCamera && <p className="identify-prompt">请选择 <strong>{cameraDisplayLabel(currentCamera, cameras, cameras.indexOf(currentCamera), mode)}</strong> 的画面</p>}<div className="identify-camera-grid">{cameraPreviews.map((camera) => {
       const assignedEntry = Object.entries(cameraAssignments).find(([, id]) => id === camera.id); const assignedCamera = cameras.find((item) => item.id === assignedEntry?.[0]); const assignedIndex = assignedCamera ? cameras.indexOf(assignedCamera) : -1;
@@ -586,9 +613,11 @@ function DeviceOverview({ configuration, model }: { configuration: DeviceConfigu
   }, []);
 
   const serialIds = new Set(inventory?.serial.map((device) => device.id) ?? []);
+  const canDevices = new Map(inventory?.socketcan.map((device) => [device.id, device]) ?? []);
   const cameraIds = new Set(inventory?.cameras.map((device) => device.id) ?? []);
   const bindings = [
     ...configuration.serial_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: binding.kind === 'robot' ? '机械臂' : '遥操作设备', port: binding.port, online: serialIds.has(binding.id) })),
+    ...configuration.can_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: binding.kind === 'robot' ? '机械臂 · CAN' : '遥操作设备 · CAN', port: canDevices.get(binding.id)?.interface ?? binding.id, online: canDevices.has(binding.id) })),
     ...configuration.camera_bindings.map((binding) => ({ id: binding.id, alias: binding.alias, kind: '摄像头', port: binding.port, online: cameraIds.has(binding.id) })),
   ];
   const offlineCount = inventory ? bindings.filter((binding) => !binding.online).length : 0;
@@ -599,6 +628,13 @@ function DeviceOverview({ configuration, model }: { configuration: DeviceConfigu
 }
 
 function CalibrationPrototype({ configuration, onConfigurationChange }: { configuration: DeviceConfiguration; onConfigurationChange: (configuration: DeviceConfiguration) => void }) {
+  if (configuration.can_bindings.length > 0 && configuration.serial_bindings.length === 0) {
+    return <section className="workspace-view"><div className="activation-view"><div><span className="eyebrow">绝对编码器</span><h2>不需要校准</h2><p>PiperX 使用绝对编码器，设备连接后可直接使用。</p></div></div></section>;
+  }
+  return <SerialCalibrationPrototype configuration={configuration} onConfigurationChange={onConfigurationChange} />;
+}
+
+function SerialCalibrationPrototype({ configuration, onConfigurationChange }: { configuration: DeviceConfiguration; onConfigurationChange: (configuration: DeviceConfiguration) => void }) {
   const [status, setStatus] = useState<CalibrationStatus | null>(null);
   const [error, setError] = useState('');
   const refreshedRun = useRef(0);
@@ -757,7 +793,7 @@ function RememberedNumberInput({ value, onCommit, storageKey, min, max, disabled
 }
 
 function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, statusSlot, onWorkspaceRefresh }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; workspace: WorkspaceInventory; runtimeEvent: RuntimeEvent | null; storage: StorageInfo | null; statusSlot: HTMLDivElement | null; onWorkspaceRefresh: () => void }) {
-  const followers = configuration.serial_bindings.filter((binding) => binding.kind === 'robot');
+  const followers = [...configuration.serial_bindings, ...configuration.can_bindings].filter((binding) => binding.kind === 'robot');
   const content = {
     teleoperation: { title: '遥操作', operation: 'teleoperation', endpoint: '/api/runtime/teleoperation/start', button: '开始遥操作', note: '' },
     recording: { title: '数据采集', operation: 'recording', endpoint: '/api/runtime/recording/start', button: '开始采集', note: '' },

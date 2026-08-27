@@ -8,9 +8,9 @@ import time
 from typing import Any
 
 from evomind_lerobot.discovery import hardware_inventory
-from evomind_lerobot.hardware_motion import HardwareMotionSession
+from evomind_lerobot.hardware_motion import HardwareMotionSession, PiperMotionSession
 
-_motion_session: HardwareMotionSession | None = None
+_motion_session: HardwareMotionSession | PiperMotionSession | None = None
 _motion_lock = threading.Lock()
 
 
@@ -31,12 +31,35 @@ def _serial_candidates(excluded_ids: set[str]) -> list[dict[str, Any]]:
     ]
 
 
-def start_motion_identification(model: str, excluded_ids: set[str]) -> dict[str, Any]:
+def _socketcan_candidates(excluded_ids: set[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "stable_id": device["id"],
+            "path": device["interface"],
+            "device": device["interface"],
+            "bus_type": "socketcan",
+            "motor_ids": [],
+            "delta": 0,
+            "moved": False,
+            "motion_error": "",
+        }
+        for device in hardware_inventory()["socketcan"]
+        if device["id"] not in excluded_ids
+    ]
+
+
+def start_motion_identification(
+    model: str, excluded_ids: set[str], expected_kind: str = "robot"
+) -> dict[str, Any]:
     global _motion_session
     with _motion_lock:
         if _motion_session is not None:
             _motion_session.stop()
-        session = HardwareMotionSession(_serial_candidates(excluded_ids), model)
+        session = (
+            PiperMotionSession(_socketcan_candidates(excluded_ids), expected_kind)
+            if model.strip().lower().replace("-", "").replace("_", "") == "piperx"
+            else HardwareMotionSession(_serial_candidates(excluded_ids), model)
+        )
         readable_count = session.start()
         _motion_session = session
         return {

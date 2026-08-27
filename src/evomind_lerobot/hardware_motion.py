@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
+import time
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 DEFAULT_BAUDRATE = 1_000_000
 DEFAULT_MOTOR_IDS = list(range(1, 7))
 MOTION_THRESHOLD = 50
+PIPER_MOTION_THRESHOLD = 1000
 
 _FEETECH_POS_ADDR = 56
 _DYNAMIXEL_POS_ADDR = 132
@@ -279,3 +281,105 @@ class HardwareMotionSession:
             "moved": candidate.get("moved", False),
             "motion_error": candidate.get("motion_error", ""),
         }
+
+
+class PiperMotionDetector:
+    """Passively watch Piper feedback without changing role or enabling motors."""
+
+    def __init__(self, interface: str, expected_kind: str) -> None:
+        from piper_sdk import C_PiperInterface_V2, LogLevel
+
+        self.arm = C_PiperInterface_V2(
+            can_name=interface,
+            judge_flag=False,
+            can_auto_init=True,
+            logger_level=LogLevel.WARNING,
+        )
+        self.expected_kind = expected_kind
+        self.last_positions: dict[int, int] = {}
+
+    def start(self, timeout_s: float = 2.0) -> None:
+        self.arm.ConnectPort(can_init=True, piper_init=False)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            positions = self._read_positions()
+            if positions:
+                self.last_positions = positions
+                return
+            time.sleep(0.02)
+        raise RuntimeError("未能读取 PiperX 关节反馈")
+
+    def _read_positions(self) -> dict[int, int]:
+        feedback = self.arm.GetArmJointMsgs()
+        control = self.arm.GetArmJointCtrl()
+        if self.expected_kind == "teleoperator":
+            message = control
+            state = message.joint_ctrl
+        else:
+            if control.time_stamp > 0:
+                return {}
+            message = feedback
+            state = message.joint_state
+        if message.time_stamp <= 0:
+            return {}
+        return {
+            index: int(getattr(state, f"joint_{index}"))
+            for index in DEFAULT_MOTOR_IDS
+        }
+
+    def poll(self) -> dict[str, Any]:
+        current = self._read_positions()
+        delta = detect_motion(self.last_positions, current)
+        if current:
+            self.last_positions = current
+        return {"delta": delta, "moved": delta > PIPER_MOTION_THRESHOLD}
+
+    def stop(self) -> None:
+        self.arm.DisconnectPort()
+
+
+class PiperMotionSession:
+    def __init__(self, candidates: list[dict[str, Any]], expected_kind: str) -> None:
+        self._candidates = [dict(candidate) for candidate in candidates]
+        self._expected_kind = expected_kind
+        self._detectors: dict[str, PiperMotionDetector] = {}
+        self._active_id = ""
+
+    def start(self) -> int:
+        for candidate in self._candidates:
+            stable_id = str(candidate["stable_id"])
+            detector = PiperMotionDetector(str(candidate["device"]), self._expected_kind)
+            try:
+                detector.start()
+            except (ImportError, OSError, RuntimeError, ValueError) as error:
+                candidate["motion_error"] = f"读取 PiperX 失败：{error}"
+                with suppress(Exception):
+                    detector.stop()
+                continue
+            candidate.update({"bus_type": "socketcan", "motor_ids": DEFAULT_MOTOR_IDS})
+            self._detectors[stable_id] = detector
+        return len(self._detectors)
+
+    def stop(self) -> None:
+        for detector in self._detectors.values():
+            with suppress(Exception):
+                detector.stop()
+        self._detectors = {}
+        self._active_id = ""
+
+    def poll(self) -> list[dict[str, Any]]:
+        results = []
+        for candidate in self._candidates:
+            result = HardwareMotionSession._payload(candidate)
+            detector = self._detectors.get(str(candidate["stable_id"]))
+            if detector is not None:
+                try:
+                    result.update(detector.poll())
+                except (OSError, RuntimeError, ValueError) as error:
+                    result["motion_error"] = f"读取 PiperX 失败：{error}"
+            results.append(result)
+        normalized, self._active_id = resolve_active_motion(results, self._active_id)
+        return normalized
+
+    def payloads(self) -> list[dict[str, Any]]:
+        return [HardwareMotionSession._payload(candidate) for candidate in self._candidates]

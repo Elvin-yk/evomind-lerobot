@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,55 @@ def _serial_devices() -> list[dict[str, str]]:
         for path in sorted(root.iterdir())
         if path.is_symlink()
     ]
+
+
+def _socketcan_devices() -> list[dict[str, Any]]:
+    devices = []
+    network_root = Path("/sys/class/net")
+    if not network_root.exists():
+        return devices
+    for path in sorted(network_root.iterdir()):
+        try:
+            if (path / "type").read_text().strip() != "280":
+                continue
+        except OSError:
+            continue
+        properties = subprocess.run(
+            ["udevadm", "info", "--query=property", f"--path={path}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.splitlines()
+        serial_number = next(
+            (
+                line.removeprefix("ID_SERIAL_SHORT=")
+                for line in properties
+                if line.startswith("ID_SERIAL_SHORT=")
+            ),
+            "",
+        )
+        if not serial_number:
+            continue
+        detail = subprocess.run(
+            ["ip", "-details", "link", "show", path.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        bitrate_match = re.search(r"\bbitrate\s+(\d+)", detail)
+        flags_match = re.search(r"<([^>]+)>", detail)
+        flags = set(flags_match.group(1).split(",")) if flags_match else set()
+        devices.append(
+            {
+                "id": serial_number,
+                "serial_number": serial_number,
+                "interface": path.name,
+                "state": (path / "operstate").read_text().strip(),
+                "up": "UP" in flags,
+                "bitrate": int(bitrate_match.group(1)) if bitrate_match else None,
+            }
+        )
+    return devices
 
 
 def _video_devices() -> list[dict[str, str]]:
@@ -75,6 +125,7 @@ def hardware_inventory() -> dict[str, Any]:
     video_devices = _video_devices()
     return {
         "serial": _serial_devices(),
+        "socketcan": _socketcan_devices(),
         "video": video_devices,
         "cameras": _camera_devices(video_devices),
         "platform": os.uname().sysname,

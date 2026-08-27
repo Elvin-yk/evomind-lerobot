@@ -139,6 +139,7 @@ console = [
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.34.0,<1.0.0",
 ]
+piperx = ["piper_sdk>=0.6.1,<0.7.0"]
 
 # Common
 av-dep = ["av>=15.0.0,<16.0.0"]

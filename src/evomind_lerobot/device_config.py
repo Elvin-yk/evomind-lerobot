@@ -26,6 +26,13 @@ class SerialBinding(StrictModel):
     side: Literal["single", "left", "right"]
 
 
+class CanBinding(StrictModel):
+    id: str
+    alias: str = Field(min_length=1)
+    kind: Literal["robot", "teleoperator"]
+    side: Literal["single", "left", "right"]
+
+
 class CameraBinding(StrictModel):
     id: str
     port: str
@@ -45,17 +52,24 @@ class DeviceConfiguration(StrictModel):
     teleoperator_type: str | None = None
     camera_slots: list[CameraSlot] = Field(default_factory=list)
     serial_bindings: list[SerialBinding] = Field(default_factory=list)
+    can_bindings: list[CanBinding] = Field(default_factory=list)
     camera_bindings: list[CameraBinding] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_bindings(self) -> DeviceConfiguration:
         aliases = [binding.alias for binding in self.serial_bindings]
+        aliases.extend(binding.alias for binding in self.can_bindings)
         aliases.extend(binding.alias for binding in self.camera_bindings)
         if len(aliases) != len(set(aliases)):
             raise ValueError("Device aliases must be unique")
         serial_ids = [binding.id for binding in self.serial_bindings]
+        can_ids = [binding.id for binding in self.can_bindings]
         camera_ids = [binding.id for binding in self.camera_bindings]
-        if len(serial_ids) != len(set(serial_ids)) or len(camera_ids) != len(set(camera_ids)):
+        if (
+            len(serial_ids) != len(set(serial_ids))
+            or len(can_ids) != len(set(can_ids))
+            or len(camera_ids) != len(set(camera_ids))
+        ):
             raise ValueError("A physical device can only be bound once")
         slot_aliases = [slot.alias for slot in self.camera_slots]
         if len(slot_aliases) != len(set(slot_aliases)):
@@ -63,12 +77,19 @@ class DeviceConfiguration(StrictModel):
         if self.camera_bindings and set(slot_aliases) != {binding.alias for binding in self.camera_bindings}:
             raise ValueError("Camera bindings must match the declared camera slots")
         if (
-            any(binding.kind == "teleoperator" for binding in self.serial_bindings)
+            any(
+                binding.kind == "teleoperator"
+                for binding in [*self.serial_bindings, *self.can_bindings]
+            )
             and self.teleoperator_type is None
         ):
             raise ValueError("A teleoperator type is required for teleoperator bindings")
         for kind in ("robot", "teleoperator"):
-            kind_bindings = [binding for binding in self.serial_bindings if binding.kind == kind]
+            kind_bindings = [
+                binding
+                for binding in [*self.serial_bindings, *self.can_bindings]
+                if binding.kind == kind
+            ]
             if len(kind_bindings) == 2 and {binding.side for binding in kind_bindings} != {"left", "right"}:
                 raise ValueError(f"Dual {kind} bindings must contain one left and one right device")
             if len(kind_bindings) == 1 and kind_bindings[0].side != "single":
@@ -96,7 +117,9 @@ def calibration_id(configuration: DeviceConfiguration, binding: SerialBinding) -
 
 def runtime_id(configuration: DeviceConfiguration, kind: str) -> str:
     identities = sorted(
-        binding.id for binding in configuration.serial_bindings if binding.kind == kind
+        binding.id
+        for binding in [*configuration.serial_bindings, *configuration.can_bindings]
+        if binding.kind == kind
     )
     if not identities:
         raise ValueError(f"没有已绑定的 {kind} 设备")

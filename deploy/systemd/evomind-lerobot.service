@@ -1,0 +1,23 @@
+[Unit]
+Description=Evomind LeRobot local console
+After=network-online.target evomind-lerobot-can.service
+Wants=network-online.target
+Requires=evomind-lerobot-can.service
+
+[Service]
+Type=simple
+User=zhaobo
+Group=zhaobo
+SupplementaryGroups=video dialout
+WorkingDirectory=/opt/evomind-lerobot/current
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_LEROBOT_HOME=/home/zhaobo/.cache/huggingface/lerobot
+ExecStart=/opt/evomind-lerobot/current/.venv/bin/evomind-lerobot-serve --host 0.0.0.0 --port 8767
+Restart=on-failure
+RestartSec=2
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

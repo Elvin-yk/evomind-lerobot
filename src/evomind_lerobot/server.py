@@ -71,6 +71,7 @@ from evomind_lerobot.workspace import workspace_inventory
 class MotionStartRequest(BaseModel):
     model: str = Field(min_length=1)
     excluded_ids: list[str] = Field(default_factory=list)
+    kind: str = Field(default="robot", pattern="^(robot|teleoperator)$")
 
 
 class CalibrationStartRequest(BaseModel):
@@ -281,10 +282,30 @@ def create_app():
         if configuration.teleoperator_type != profile["teleoperator_type"]:
             raise HTTPException(400, "Teleoperator type does not match the selected device profile")
 
-        robot_bindings = [binding for binding in configuration.serial_bindings if binding.kind == "robot"]
-        teleoperator_bindings = [
-            binding for binding in configuration.serial_bindings if binding.kind == "teleoperator"
-        ]
+        def profile_bindings(kind: str):
+            transport = profile[f"{kind}_transport"]
+            source = (
+                configuration.can_bindings
+                if transport == "socketcan"
+                else configuration.serial_bindings
+            )
+            return [binding for binding in source if binding.kind == kind]
+
+        for kind in ("robot", "teleoperator"):
+            expected_transport = profile[f"{kind}_transport"]
+            unexpected = (
+                [binding for binding in configuration.serial_bindings if binding.kind == kind]
+                if expected_transport == "socketcan"
+                else [binding for binding in configuration.can_bindings if binding.kind == kind]
+            )
+            if unexpected:
+                raise HTTPException(
+                    400,
+                    f"{kind.capitalize()} bindings must use {expected_transport}",
+                )
+
+        robot_bindings = profile_bindings("robot")
+        teleoperator_bindings = profile_bindings("teleoperator")
         if (
             robot_bindings
             and profile["robot_ports"] is not None
@@ -303,6 +324,7 @@ def create_app():
 
         inventory = hardware_inventory()
         serial_devices = {device["id"]: device for device in inventory["serial"]}
+        can_devices = {device["id"]: device for device in inventory["socketcan"]}
         camera_devices = {device["id"]: device for device in inventory["cameras"]}
         current_configuration = load_device_configuration()
         unchanged_serial = (
@@ -321,6 +343,9 @@ def create_app():
             device = serial_devices.get(binding.id)
             if device is None or binding.port != device["path"]:
                 raise HTTPException(400, f"Serial device is no longer connected: {binding.id}")
+        for binding in configuration.can_bindings:
+            if binding.id not in can_devices:
+                raise HTTPException(400, f"SocketCAN device is no longer connected: {binding.id}")
         for binding in configuration.camera_bindings:
             if (binding.alias, binding.id, binding.port) in unchanged_cameras:
                 continue
@@ -451,6 +476,7 @@ def create_app():
             start_motion_identification,
             body.model,
             set(body.excluded_ids),
+            body.kind,
         )
 
     @app.get("/api/identify/motion/poll")
