@@ -56,6 +56,14 @@ from evomind_lerobot.identification import (
     stop_motion_identification,
 )
 from evomind_lerobot.jobs import JobManager
+from evomind_lerobot.piper_service import (
+    PiperActionRequest,
+    PiperScanRequest,
+    close_piper_session,
+    run_piper_action,
+    scan_piper,
+    snapshot_piper,
+)
 from evomind_lerobot.runtime_service import (
     HardwareBusyError,
     RecordingStartRequest,
@@ -394,6 +402,50 @@ def create_app():
         except (ConnectionError, OSError, RuntimeError, ValueError) as error:
             raise HTTPException(400, str(error)) from error
 
+    @app.post("/api/maintenance/piper/scan")
+    async def scan_piper_arm(body: PiperScanRequest):
+        if jobs.current is not None:
+            raise HTTPException(409, "硬件任务运行中，不能打开维修工具")
+        await asyncio.to_thread(stop_motion_identification)
+        events.publish(Operation.DIAGNOSTICS, Phase.STARTING, "正在读取 PiperX")
+        try:
+            result = await asyncio.to_thread(scan_piper, body)
+        except (ConnectionError, OSError, RuntimeError, ValueError) as error:
+            events.publish(Operation.DIAGNOSTICS, Phase.FAILED, str(error))
+            raise HTTPException(400, str(error)) from error
+        events.publish(
+            Operation.DIAGNOSTICS,
+            Phase.COMPLETED,
+            "PiperX 状态读取完成",
+            data={"device_id": body.device_id, "interface": result["interface"]},
+        )
+        return result
+
+    @app.post("/api/maintenance/piper/snapshot")
+    async def snapshot_piper_arm(body: PiperScanRequest):
+        try:
+            return await asyncio.to_thread(snapshot_piper, body)
+        except (ConnectionError, OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/maintenance/piper/action")
+    async def control_piper_arm(body: PiperActionRequest):
+        if jobs.current is not None:
+            raise HTTPException(409, "硬件任务运行中，不能执行维修操作")
+        events.publish(
+            Operation.DIAGNOSTICS,
+            Phase.RUNNING,
+            f"执行 PiperX 操作：{body.action}",
+            data={"device_id": body.device_id, "motor_id": body.motor_id},
+        )
+        try:
+            result = await asyncio.to_thread(run_piper_action, body)
+        except (ConnectionError, OSError, RuntimeError, ValueError) as error:
+            events.publish(Operation.DIAGNOSTICS, Phase.FAILED, str(error))
+            raise HTTPException(400, str(error)) from error
+        events.publish(Operation.DIAGNOSTICS, Phase.COMPLETED, "PiperX 操作完成")
+        return result
+
     @app.get("/api/calibration/status")
     def calibration_status():
         return calibration.status()
@@ -426,6 +478,7 @@ def create_app():
     @app.post("/api/runtime/teleoperation/start")
     def runtime_teleoperation_start(body: TeleoperationStartRequest):
         try:
+            close_piper_session()
             return runtime.start(Operation.TELEOPERATION, body)
         except HardwareBusyError as error:
             raise HTTPException(409, str(error)) from error
@@ -433,6 +486,7 @@ def create_app():
     @app.post("/api/runtime/recording/start")
     def runtime_recording_start(body: RecordingStartRequest):
         try:
+            close_piper_session()
             return runtime.start(Operation.RECORDING, body)
         except CollectionTaskNotFoundError as error:
             raise HTTPException(404, str(error)) from error
@@ -444,6 +498,7 @@ def create_app():
     @app.post("/api/runtime/rollout/start")
     def runtime_rollout_start(body: RolloutStartRequest):
         try:
+            close_piper_session()
             return runtime.start(Operation.ROLLOUT, body)
         except HardwareBusyError as error:
             raise HTTPException(409, str(error)) from error
@@ -451,6 +506,7 @@ def create_app():
     @app.post("/api/runtime/replay/start")
     def runtime_replay_start(body: ReplayStartRequest):
         try:
+            close_piper_session()
             return runtime.start(Operation.REPLAY, body)
         except HardwareBusyError as error:
             raise HTTPException(409, str(error)) from error
@@ -471,6 +527,7 @@ def create_app():
 
     @app.post("/api/identify/motion/start")
     async def identify_motion_start(body: MotionStartRequest):
+        await asyncio.to_thread(close_piper_session)
         return await asyncio.to_thread(
             start_motion_identification,
             body.model,

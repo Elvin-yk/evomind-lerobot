@@ -52,8 +52,19 @@ def _socketcan_devices() -> list[dict[str, Any]]:
             ),
             "",
         )
-        if not serial_number:
-            continue
+        device_path = next(
+            (
+                line.removeprefix("ID_PATH=")
+                for line in properties
+                if line.startswith("ID_PATH=")
+            ),
+            "",
+        )
+        # Identification must include every SocketCAN interface.  Prefer the
+        # adapter serial for a reboot-stable identity, then the physical USB
+        # path, and only fall back to the current interface name when udev has
+        # neither property (for example, a virtual CAN interface).
+        stable_id = serial_number or device_path or path.name
         detail = subprocess.run(
             ["ip", "-details", "link", "show", path.name],
             capture_output=True,
@@ -65,7 +76,7 @@ def _socketcan_devices() -> list[dict[str, Any]]:
         flags = set(flags_match.group(1).split(",")) if flags_match else set()
         devices.append(
             {
-                "id": serial_number,
+                "id": stable_id,
                 "serial_number": serial_number,
                 "interface": path.name,
                 "state": (path / "operstate").read_text().strip(),

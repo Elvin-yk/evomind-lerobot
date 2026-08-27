@@ -49,6 +49,15 @@ type FeetechMotor = { id: number; model: string; model_number: number; position:
 type FeetechScan = { device_id: string; baudrate: number; motors: FeetechMotor[] };
 type FeetechSnapshot = { positions: { id: number; position: number }[] };
 type PositionSample = { capturedAt: number; positions: Record<number, number> };
+type PiperMotor = {
+  id: number; position: number | null; voltage: number; driver_temperature: number;
+  motor_temperature: number; current: number; enabled: boolean; faults: string[];
+};
+type PiperSnapshot = {
+  device_id: string; interface: string; firmware: string; feedback_source: 'feedback' | 'control' | 'none'; can_fps: number;
+  status: { available: boolean; ctrl_mode: number; arm_status: number; mode: number; error_code: number };
+  motors: PiperMotor[]; gripper: { available: boolean; position: number; effort: number };
+};
 type CalibrationStatus = {
   state: 'idle' | 'starting' | 'running' | 'stopping' | 'stopped' | 'done' | 'error';
   mode: 'auto' | 'manual' | ''; phase: string; alias: string; message: string; prompt_id: string;
@@ -439,7 +448,123 @@ function IdentificationStep({ slots, cameras, mode, showHardware, showSensors, s
 function RepairPanel({ saved }: { saved: DeviceConfiguration }) {
   const configuredTypes = [saved.robot_type, saved.teleoperator_type];
   const supportsFeetech = configuredTypes.some((type) => type && ['so100_follower', 'so100_leader', 'so101_follower', 'so101_leader', 'bi_so_follower', 'bi_so_leader'].includes(type));
-  return <div className="repair-layout">{supportsFeetech ? <FeetechPanel saved={saved} /> : <p className="empty">当前设备暂未提供维修工具。</p>}</div>;
+  const supportsPiper = configuredTypes.some((type) => type && ['piperx_follower', 'piperx_leader', 'bi_piperx_follower', 'bi_piperx_leader'].includes(type));
+  return <div className="repair-layout">{supportsFeetech ? <FeetechPanel saved={saved} /> : supportsPiper ? <PiperPanel saved={saved} /> : <p className="empty">当前设备暂未提供维修工具。</p>}</div>;
+}
+
+const piperControlModes: Record<number, string> = { 0: '待机', 1: 'CAN 控制', 2: '示教', 3: '以太网控制', 4: 'Wi-Fi 控制', 5: '遥控器控制', 6: '联动示教', 7: '离线轨迹' };
+const piperArmStatuses: Record<number, string> = { 0: '正常', 1: '急停', 2: '无解', 3: '奇异点', 4: '目标超限', 5: '关节通信异常', 6: '抱闸未打开', 7: '碰撞保护', 8: '拖动超速', 9: '关节状态异常', 10: '其他异常', 14: '主控过温', 15: '释放电阻过温' };
+
+function piperCanLabel(device: CanDevice) {
+  return `${device.interface} · ${device.serial_number || device.id}`;
+}
+
+function PiperPanel({ saved }: { saved: DeviceConfiguration }) {
+  const [devices, setDevices] = useState<CanDevice[]>([]);
+  const [deviceId, setDeviceId] = useState(saved.can_bindings[0]?.id ?? '');
+  const [snapshot, setSnapshot] = useState<PiperSnapshot | null>(null);
+  const [history, setHistory] = useState<PositionSample[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [actingId, setActingId] = useState<number | null>(null);
+  const [controlArmed, setControlArmed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const selectedDevice = devices.find((device) => device.id === deviceId);
+  const scannedDeviceId = snapshot?.device_id;
+
+  const loadDevices = useCallback(async () => {
+    try {
+      const inventory = await readJson<HardwareInventory>('/api/devices');
+      setDevices(inventory.socketcan);
+      setDeviceId((current) => inventory.socketcan.some((device) => device.id === current) ? current : inventory.socketcan[0]?.id ?? '');
+    } catch { setError('读取 CAN 控制器失败'); }
+  }, []);
+
+  useEffect(() => {
+    readJson<HardwareInventory>('/api/devices')
+      .then((inventory) => {
+        setDevices(inventory.socketcan);
+        setDeviceId((current) => inventory.socketcan.some((device) => device.id === current) ? current : inventory.socketcan[0]?.id ?? '');
+      })
+      .catch(() => setError('读取 CAN 控制器失败'));
+  }, []);
+
+  async function scanArm() {
+    if (!deviceId) return;
+    setBusy(true); setError(null); setLiveError(null); setControlArmed(false);
+    try {
+      const result = await postJson<PiperSnapshot>('/api/maintenance/piper/scan', { device_id: deviceId });
+      setSnapshot(result);
+      setHistory([{ capturedAt: Date.now(), positions: Object.fromEntries(result.motors.flatMap((motor) => motor.position === null ? [] : [[motor.id, motor.position]])) }]);
+    } catch (scanError) { setError(scanError instanceof Error ? scanError.message : 'PiperX 读取失败'); }
+    finally { setBusy(false); }
+  }
+
+  useEffect(() => {
+    if (!scannedDeviceId) return;
+    let cancelled = false; let timer = 0;
+    const poll = async () => {
+      try {
+        const result = await postJson<PiperSnapshot>('/api/maintenance/piper/snapshot', { device_id: scannedDeviceId });
+        if (cancelled) return;
+        setSnapshot(result); setLiveError(null);
+        const positions = Object.fromEntries(result.motors.flatMap((motor) => motor.position === null ? [] : [[motor.id, motor.position]]));
+        setHistory((current) => [...current, { capturedAt: Date.now(), positions }].slice(-60));
+        timer = window.setTimeout(poll, 300);
+      } catch (pollError) {
+        if (cancelled) return;
+        setLiveError(pollError instanceof Error ? pollError.message : '实时读取中断');
+        timer = window.setTimeout(poll, 1000);
+      }
+    };
+    timer = window.setTimeout(poll, 300);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [scannedDeviceId]);
+
+  function armControl() {
+    if (controlArmed) return setControlArmed(false);
+    if (window.confirm('启用控制后可以使能 PiperX 关节。请扶稳机械臂并确认周围安全。')) setControlArmed(true);
+  }
+
+  async function action(motorId: number, actionName: 'enable' | 'disable') {
+    if (!snapshot || (actionName === 'enable' && !controlArmed)) return;
+    setActingId(motorId); setError(null);
+    try {
+      const result = await postJson<PiperSnapshot>('/api/maintenance/piper/action', { device_id: snapshot.device_id, motor_id: motorId, action: actionName, confirmed: actionName === 'enable' });
+      setSnapshot(result);
+    } catch (actionError) { setError(actionError instanceof Error ? actionError.message : 'PiperX 操作失败'); }
+    finally { setActingId(null); }
+  }
+
+  const available = snapshot?.feedback_source !== 'none';
+  const armStatus = snapshot?.status.available ? (piperArmStatuses[snapshot.status.arm_status] ?? `状态 ${snapshot.status.arm_status}`) : '未收到状态帧';
+  return <section className="piper-panel">
+    <div className="piper-toolbar">
+      <div className="controller-field"><div className="field-label"><label htmlFor="piper-controller">CAN 控制器</label><button className="text-button inline-icon" type="button" onClick={() => void loadDevices()}><RefreshCw size={15} />刷新</button></div><select id="piper-controller" value={deviceId} onChange={(event) => { setDeviceId(event.target.value); setSnapshot(null); setHistory([]); setControlArmed(false); }}>{devices.map((device) => <option value={device.id} key={device.id}>{piperCanLabel(device)}</option>)}</select></div>
+      <button className="primary inline-icon" type="button" onClick={() => void scanArm()} disabled={busy || !deviceId}><RefreshCw size={16} />{busy ? '读取中' : '读取机械臂'}</button>
+    </div>
+    {error && <div className="error compact">{error}</div>}
+    {snapshot && <div className="piper-workspace">
+      <div className="bus-heading"><div><p>{selectedDevice ? piperCanLabel(selectedDevice) : snapshot.device_id}</p><h3>PiperX</h3></div><div className="bus-actions"><span className={`live-state ${liveError ? 'failed' : ''}`}>{liveError ? '读取中断' : '实时读取中'}</span><button className={`outline ${controlArmed ? 'armed' : ''}`} type="button" onClick={armControl}>{controlArmed ? '锁定控制' : '启用控制'}</button></div></div>
+      <div className="piper-summary">
+        <div><span>固件</span><strong>{snapshot.firmware || '未读取'}</strong></div>
+        <div><span>反馈</span><strong>{snapshot.feedback_source === 'feedback' ? '状态反馈' : snapshot.feedback_source === 'control' ? '主臂控制反馈' : '无反馈'}</strong></div>
+        <div><span>控制模式</span><strong>{snapshot.status.available ? (piperControlModes[snapshot.status.ctrl_mode] ?? `模式 ${snapshot.status.ctrl_mode}`) : '—'}</strong></div>
+        <div><span>机械臂状态</span><strong className={snapshot.status.arm_status ? 'failed-status' : ''}>{armStatus}</strong></div>
+        <div><span>CAN 帧率</span><strong>{snapshot.can_fps.toFixed(0)} FPS</strong></div>
+        <div><span>夹爪</span><strong>{snapshot.gripper.available ? `${snapshot.gripper.position.toFixed(1)} mm` : '未读取'}</strong></div>
+      </div>
+      {!available && <p className="empty">这个接口已连接，但暂未收到关节反馈。主臂静止时可能只在移动后产生控制反馈。</p>}
+      <PiperPositionChart motors={snapshot.motors} history={history} />
+      <div className="piper-bulk-actions"><button className="outline" type="button" onClick={() => void action(7, 'disable')} disabled={actingId !== null}>全部失能</button><button className="primary" type="button" onClick={() => void action(7, 'enable')} disabled={!controlArmed || actingId !== null}>全部使能</button></div>
+      <div className="piper-motor-list">{snapshot.motors.map((motor) => <div className="piper-motor-row" key={motor.id}>
+        <div><strong>关节 {motor.id}</strong><span>{motor.position === null ? '—' : `${motor.position.toFixed(2)}°`}</span></div>
+        <div className="piper-telemetry"><span>{motor.voltage.toFixed(1)} V</span><span>{motor.current.toFixed(2)} A</span><span>驱动 {motor.driver_temperature} °C</span><span>电机 {motor.motor_temperature} °C</span></div>
+        <div className={`piper-faults ${motor.faults.length ? 'failed' : ''}`}>{motor.faults.length ? motor.faults.join(' · ') : '状态正常'}</div>
+        <button className={`torque-button ${motor.enabled ? 'enabled' : ''}`} type="button" disabled={actingId !== null || (!controlArmed && !motor.enabled)} onClick={() => void action(motor.id, motor.enabled ? 'disable' : 'enable')}>{actingId === motor.id ? '处理中' : motor.enabled ? '已使能' : '使能'}</button>
+      </div>)}</div>
+    </div>}
+  </section>;
 }
 
 function FeetechPanel({ saved }: { saved: DeviceConfiguration }) {
@@ -566,6 +691,24 @@ function FeetechPanel({ saved }: { saved: DeviceConfiguration }) {
 }
 
 const chartColors = ['#2e7652', '#db7a4d', '#4f78c4', '#9a63b5', '#d2a52d', '#3e9ca7', '#c65368', '#6f7c72'];
+
+function PiperPositionChart({ motors, history }: { motors: PiperMotor[]; history: PositionSample[] }) {
+  const width = 920; const height = 260; const left = 48; const top = 18; const plotWidth = width - left - 16; const plotHeight = height - top - 32;
+  const minimum = -180; const maximum = 180; const yTicks = [-180, -90, 0, 90, 180];
+  const yFor = (value: number) => top + plotHeight - ((value - minimum) / (maximum - minimum)) * plotHeight;
+  return <section className="position-chart"><div className="chart-title"><div><h3>实时关节角度</h3><span>度</span></div><div className="chart-legend">{motors.map((motor, index) => <span key={motor.id}><i style={{ background: chartColors[index % chartColors.length] }} />关节 {motor.id}</span>)}</div></div><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="PiperX 关节实时角度折线图" preserveAspectRatio="none">
+    {yTicks.map((tick) => <g key={tick}><line x1={left} x2={width - 16} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" /><text x={left - 9} y={yFor(tick) + 4} textAnchor="end">{tick}</text></g>)}
+    {motors.map((motor, motorIndex) => {
+      const points = history.flatMap((sample, index) => {
+        const value = sample.positions[motor.id];
+        if (value === undefined) return [];
+        const x = left + (history.length <= 1 ? plotWidth : (index / (history.length - 1)) * plotWidth);
+        return [`${x},${yFor(value)}`];
+      }).join(' ');
+      return <polyline key={motor.id} points={points} fill="none" stroke={chartColors[motorIndex % chartColors.length]} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />;
+    })}
+  </svg></section>;
+}
 
 function PositionChart({ motors, history }: { motors: FeetechMotor[]; history: PositionSample[] }) {
   const width = 920; const height = 260; const left = 48; const top = 18; const plotWidth = width - left - 16; const plotHeight = height - top - 32;
