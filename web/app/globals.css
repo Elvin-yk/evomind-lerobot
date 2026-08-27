@@ -23,8 +23,9 @@ aside { position: sticky; top: 0; display: flex; height: 100vh; flex-direction: 
 .brand { position: relative; display: flex; min-height: 40px; align-items: center; gap: 10px; padding: 0 7px; }
 .brand-mark { display: inline-grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border-radius: 6px; background: #000; color: #fff; font-size: 13px; font-weight: 700; }
 .brand strong { font-size: 15px; letter-spacing: -.02em; }
-.collapse { position: absolute; right: -28px; z-index: 2; display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: #fff; color: #666; opacity: 0; transition: opacity .15s ease; }
+.collapse { position: absolute; right: -11px; z-index: 2; display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: #fff; color: #666; opacity: 0; transition: border-color .15s ease, color .15s ease, opacity .15s ease; }
 aside:hover .collapse { opacity: 1; }
+.collapse:hover { border-color: #bbb; color: #111; }
 nav { display: grid; gap: 3px; margin-top: 28px; }
 nav button { display: flex; min-height: 40px; align-items: center; border: 0; border-radius: 6px; background: transparent; color: #555; padding: 0 12px; text-align: left; font-size: 14px; }
 nav button:hover:not(:disabled) { background: #f5f5f5; color: #000; }
@@ -49,7 +50,9 @@ h2, h3, p { margin-top: 0; }
 .header-workflow-status .workflow-summary span { margin-bottom: 4px; }
 .header-workflow-status .workflow-summary p { margin-top: 3px; }
 .header-recognition { position: relative; }
-.header-recognition summary { display: inline-flex; min-height: 38px; align-items: center; gap: 8px; list-style: none; cursor: pointer; }
+.header-recognition summary { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; list-style: none; cursor: pointer; }
+.recognition-chevron { flex: 0 0 auto; transition: transform .15s ease; }
+.header-recognition[open] .recognition-chevron { transform: rotate(180deg); }
 .header-actions button, .header-recognition summary, .activation-view > .primary { white-space: nowrap; }
 .header-recognition summary::-webkit-details-marker { display: none; }
 .header-recognition[open] summary { border-color: #999; background: #fafafa; }
@@ -120,7 +123,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .text-button { border: 0; background: transparent; color: #222; padding: 0; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
 .inline-icon { display: inline-flex; align-items: center; gap: 6px; }
 
-.activation-view { display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 20px 0; }
+.activation-view { display: flex; max-width: 760px; align-items: center; justify-content: space-between; gap: 28px; padding: 10px 0; }
 .activation-view h2 { margin: 6px 0; font-size: 24px; letter-spacing: -.03em; }
 .activation-view p { margin: 0; color: var(--muted); }
 .activation-view > .primary { min-width: 112px; flex: 0 0 auto; }
@@ -431,10 +434,9 @@ code { font-family: var(--font-geist-mono), monospace; }
   .shell { grid-template-columns: 200px minmax(0, 1fr); }
   .shell.is-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
   main { width: calc(100% - 32px); }
-  header, .activation-view { align-items: stretch; flex-direction: column; }
-  .header-actions { align-self: stretch; justify-content: flex-end; }
+  header { align-items: flex-end; }
+  .header-actions { justify-content: flex-end; }
   .header-recognition summary { min-width: 112px; justify-content: center; }
-  .activation-view > .primary { align-self: flex-start; }
   .device-category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .device-config-section { grid-template-columns: 160px minmax(0, 1fr); }
   .identify-section { grid-template-columns: 1fr; }
