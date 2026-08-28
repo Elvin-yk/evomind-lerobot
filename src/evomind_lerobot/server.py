@@ -110,14 +110,13 @@ class CollectionTaskCreateRequest(BaseModel):
 
 class CollectionTaskUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    description: str = Field(min_length=1, max_length=500)
     target_duration_s: float = Field(gt=0, le=604_800)
     num_episodes: int = Field(default=20, ge=1, le=10_000)
     episode_time_s: int = Field(default=30, ge=1, le=86_400)
     reset_time_s: int = Field(default=10, ge=0, le=86_400)
     fps: int = Field(default=30, ge=1, le=60)
 
-    @field_validator("name", "description")
+    @field_validator("name")
     @classmethod
     def reject_blank_text(cls, value: str) -> str:
         value = value.strip()
@@ -206,7 +205,6 @@ def create_app():
             return collection_store.update_task(
                 task_id,
                 name=body.name,
-                description=body.description,
                 target_duration_s=body.target_duration_s,
                 num_episodes=body.num_episodes,
                 episode_time_s=body.episode_time_s,

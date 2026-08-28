@@ -136,6 +136,7 @@ class CollectionStore:
         target = float(values["target_duration_s"])
         episodes = int(values.get("episode_count", 0))
         sessions = int(values.get("session_count", 0))
+        active_sessions = int(values.get("active_session_count", 0))
         return {
             "id": values["id"],
             "work_date": values["work_date"],
@@ -152,6 +153,7 @@ class CollectionStore:
             "progress_percent": duration / target * 100 if target > 0 else 0,
             "completed": duration >= target,
             "locked": sessions > 0,
+            "collecting": active_sessions > 0,
             "created_at": values["created_at"],
             "updated_at": values["updated_at"],
         }
@@ -204,7 +206,9 @@ class CollectionStore:
                 SELECT t.*,
                        COALESCE(SUM(e.duration_s), 0) AS actual_duration_s,
                        COUNT(e.episode_index) AS episode_count,
-                       COUNT(DISTINCT s.id) AS session_count
+                       COUNT(DISTINCT s.id) AS session_count,
+                       COUNT(DISTINCT CASE WHEN s.status = 'running' THEN s.id END)
+                           AS active_session_count
                 FROM daily_tasks t
                 LEFT JOIN collection_sessions s ON s.task_id = t.id
                 LEFT JOIN collection_episodes e ON e.session_id = s.id
@@ -230,7 +234,9 @@ class CollectionStore:
                 SELECT t.*,
                        COALESCE(SUM(e.duration_s), 0) AS actual_duration_s,
                        COUNT(e.episode_index) AS episode_count,
-                       COUNT(DISTINCT s.id) AS session_count
+                       COUNT(DISTINCT s.id) AS session_count,
+                       COUNT(DISTINCT CASE WHEN s.status = 'running' THEN s.id END)
+                           AS active_session_count
                 FROM daily_tasks t
                 LEFT JOIN collection_sessions s ON s.task_id = t.id
                 LEFT JOIN collection_episodes e ON e.session_id = s.id
@@ -247,7 +253,6 @@ class CollectionStore:
         task_id: str,
         *,
         name: str,
-        description: str,
         target_duration_s: float,
         num_episodes: int,
         episode_time_s: int,
@@ -255,29 +260,23 @@ class CollectionStore:
         fps: int,
     ) -> dict[str, Any]:
         current = self.get_task(task_id)
-        if current["locked"] and (
-            name.strip() != current["name"] or description.strip() != current["description"]
-        ):
-            raise CollectionTaskConflictError("任务已开始采集，只能调整目标时长")
-        if current["locked"] and (
-            num_episodes != current["num_episodes"]
-            or episode_time_s != current["episode_time_s"]
-            or reset_time_s != current["reset_time_s"]
-            or fps != current["fps"]
-        ):
-            raise CollectionTaskConflictError("任务已开始采集，不能修改采集设置")
+        if current["collecting"]:
+            raise CollectionTaskConflictError("任务正在采集，不能修改")
         try:
             with self._connect() as connection:
-                connection.execute(
+                updated = connection.execute(
                     """
                     UPDATE daily_tasks
-                    SET name = ?, description = ?, target_duration_s = ?, num_episodes = ?,
-                        episode_time_s = ?, reset_time_s = ?, fps = ?, updated_at = ?
+                    SET name = ?, target_duration_s = ?, num_episodes = ?, episode_time_s = ?,
+                        reset_time_s = ?, fps = ?, updated_at = ?
                     WHERE id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM collection_sessions
+                          WHERE task_id = ? AND status = 'running'
+                      )
                     """,
                     (
                         name.strip(),
-                        description.strip(),
                         target_duration_s,
                         num_episodes,
                         episode_time_s,
@@ -285,8 +284,11 @@ class CollectionStore:
                         fps,
                         _utc_now(),
                         task_id,
+                        task_id,
                     ),
                 )
+                if updated.rowcount == 0:
+                    raise CollectionTaskConflictError("任务正在采集，不能修改")
         except sqlite3.IntegrityError as error:
             raise CollectionTaskConflictError("当天已存在同名任务") from error
         return self.get_task(task_id)

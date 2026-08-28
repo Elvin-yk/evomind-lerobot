@@ -10,6 +10,7 @@ type CollectionTask = {
   target_duration_s: number; actual_duration_s: number; episode_count: number;
   num_episodes: number; episode_time_s: number; reset_time_s: number; fps: number;
   session_count: number; progress_percent: number; completed: boolean; locked: boolean;
+  collecting: boolean;
 };
 type TrendItem = { date: string; target_duration_s: number; actual_duration_s: number; episode_count: number };
 type ActiveSession = {
@@ -166,12 +167,18 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   };
 
   async function saveTask() {
-    if (!name.trim() || !description.trim() || !Number.isFinite(targetMinutes) || targetMinutes <= 0) return;
+    if (!name.trim() || (!editingId && !description.trim()) || !Number.isFinite(targetMinutes) || targetMinutes <= 0) return;
+    if (editingId && progress.tasks.find((task) => task.id === editingId)?.collecting) {
+      setError('任务正在采集，不能修改');
+      return;
+    }
     setError('');
-    const body = JSON.stringify({
-      ...(editingId ? {} : { work_date: selectedDate }),
-      name: name.trim(), description: description.trim(), target_duration_s: targetMinutes * 60,
+    const editableFields = {
+      name: name.trim(), target_duration_s: targetMinutes * 60,
       num_episodes: numEpisodes, episode_time_s: episodeTime, reset_time_s: resetTime, fps,
+    };
+    const body = JSON.stringify(editingId ? editableFields : {
+      ...editableFields, work_date: selectedDate, description: description.trim(),
     });
     try {
       await api(editingId ? `/api/collection/tasks/${editingId}` : '/api/collection/tasks', { method: editingId ? 'PUT' : 'POST', body });
@@ -180,6 +187,10 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   }
 
   function beginEdit(task: CollectionTask) {
+    if (task.collecting) {
+      setError('任务正在采集，不能修改');
+      return;
+    }
     setEditingId(task.id); setName(task.name); setDescription(task.description);
     setTargetMinutes(Math.max(1, Math.round(task.target_duration_s / 60)));
     setNumEpisodes(task.num_episodes); setEpisodeTime(task.episode_time_s);
@@ -196,6 +207,8 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   const stage = event?.data.stage ? String(event.data.stage) : event?.phase;
   const currentEpisode = event?.data.episode;
   const isToday = selectedDate === today;
+  const editingTask = progress.tasks.find((task) => task.id === editingId);
+  const editingBlocked = Boolean(editingTask?.collecting);
 
   return <section className="progress-page">
     <div className="progress-view-switch" role="tablist" aria-label="采集进度视图">
@@ -245,7 +258,7 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
           <div className="task-progress-main"><div><strong>{task.name}</strong><p>{task.description}</p></div><span className={task.completed ? 'complete' : ''}>{task.completed ? '已完成' : '进行中'}</span></div>
           <div className="task-progress-values"><strong>{durationLabel(task.actual_duration_s)} / {durationLabel(task.target_duration_s)}</strong><span>{task.episode_count} Episodes · {task.progress_percent.toFixed(0)}%</span><small>计划 {task.num_episodes} 轮 · {task.episode_time_s} 秒 · {task.fps} FPS</small></div>
           <div className="progress-track"><i style={{ width: `${Math.min(task.progress_percent, 100)}%` }} /></div>
-          {isToday && <div className="task-row-actions"><button className="text-button" type="button" onClick={() => beginEdit(task)}>编辑</button>{!task.locked && <button className="icon-button" type="button" onClick={() => void removeTask(task.id)} aria-label={`删除${task.name}`}><Trash2 size={15} /></button>}</div>}
+          {isToday && <div className="task-row-actions"><button className="text-button" type="button" onClick={() => beginEdit(task)} disabled={task.collecting} title={task.collecting ? '正在采集，不能编辑' : undefined}>编辑</button>{!task.locked && <button className="icon-button" type="button" onClick={() => void removeTask(task.id)} aria-label={`删除${task.name}`}><Trash2 size={15} /></button>}</div>}
         </article>)}
         {!loading && progress.tasks.length === 0 && <div className="empty-state">这一天还没有采集任务</div>}
         {loading && <div className="empty-state">正在读取进度</div>}
@@ -255,16 +268,16 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     {isToday && <section className="progress-section task-editor">
       <div className="section-heading"><div><span>{editingId ? '调整任务' : '今日计划'}</span><h2>{editingId ? '编辑采集任务' : '新增采集任务'}</h2></div></div>
       <div className="form-grid">
-        <label>任务名称<input value={name} onChange={(item) => setName(item.target.value)} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} placeholder="例如：积木入盒" /></label>
-        <label>目标时长（分钟）<TaskNumberInput value={targetMinutes} onCommit={setTargetMinutes} min={1} max={10_080} /></label>
-        <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} placeholder="写入 LeRobot 数据集的完整任务描述" /></label>
+        <label>任务名称<input value={name} onChange={(item) => setName(item.target.value)} disabled={editingBlocked} placeholder="例如：积木入盒" /></label>
+        <label>目标时长（分钟）<TaskNumberInput value={targetMinutes} onCommit={setTargetMinutes} min={1} max={10_080} disabled={editingBlocked} /></label>
+        <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={Boolean(editingId)} placeholder="写入 LeRobot 数据集的完整任务描述" />{editingId && <small>任务描述创建后不可修改</small>}</label>
         <div className="full-field task-settings-label">采集设置</div>
-        <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} /></label>
-        <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} /></label>
-        <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)} /></label>
-        <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={Boolean(editingId && progress.tasks.find((task) => task.id === editingId)?.locked)}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label>
+        <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={editingBlocked} /></label>
+        <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={editingBlocked} /></label>
+        <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={editingBlocked} /></label>
+        <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={editingBlocked}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label>
       </div>
-      <div className="editor-actions">{editingId && <button className="outline" type="button" onClick={resetForm}>取消</button>}<button className="primary inline-icon" type="button" onClick={() => void saveTask()} disabled={!name.trim() || !description.trim() || !Number.isFinite(targetMinutes) || targetMinutes <= 0}><Plus size={15} />{editingId ? '保存修改' : '添加任务'}</button></div>
+      <div className="editor-actions">{editingId && <button className="outline" type="button" onClick={resetForm}>取消</button>}<button className="primary inline-icon" type="button" onClick={() => void saveTask()} disabled={editingBlocked || !name.trim() || (!editingId && !description.trim()) || !Number.isFinite(targetMinutes) || targetMinutes <= 0}><Plus size={15} />{editingId ? '保存修改' : '添加任务'}</button></div>
     </section>}</>}
   </section>;
 }
