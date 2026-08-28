@@ -56,6 +56,7 @@ type MotionStartResult = { status: string; readable_count: number; ports: Motion
 type FeetechMotor = { id: number; model: string; model_number: number; position: number; velocity: number; load: number; voltage: number; temperature: number; current: number | null; torque_enabled: boolean; moving: boolean };
 type FeetechScan = { device_id: string; baudrate: number; motors: FeetechMotor[] };
 type FeetechSnapshot = { positions: { id: number; position: number }[] };
+type FeetechIdChange = { status: string; rescan_required: boolean; old_id: number; new_id: number; model: string };
 type PositionSample = { capturedAt: number; positions: Record<number, number> };
 type PiperMotor = {
   id: number; position: number | null; voltage: number; driver_temperature: number;
@@ -657,20 +658,23 @@ function FeetechPanel({ saved }: { saved: DeviceConfiguration }) {
   const [controlArmed, setControlArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actingId, setActingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draftId, setDraftId] = useState('');
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const selectedDevice = devices.find((device) => device.id === deviceId);
   const scannedDeviceId = scan?.device_id;
   const scannedBaudrate = scan?.baudrate;
 
   const loadDevices = useCallback(async () => {
-    setDevicesLoading(true); setError(null);
+    setDevicesLoading(true); setError(null); setNotice(null);
     try {
       const inventory = await readJson<HardwareInventory>('/api/devices');
       setDevices(inventory.serial);
       setDeviceId((current) => inventory.serial.some((device) => device.id === current) ? current : inventory.serial[0]?.id ?? '');
-      setScan(null); setBusMotors([]); setHistory([]); setControlArmed(false);
+      setScan(null); setBusMotors([]); setHistory([]); setControlArmed(false); setEditingId(null);
     } catch { setError('读取控制器失败'); }
     finally { setDevicesLoading(false); }
   }, []);
@@ -684,17 +688,21 @@ function FeetechPanel({ saved }: { saved: DeviceConfiguration }) {
       .catch(() => setError('读取控制器失败'));
   }, []);
 
+  function applyScan(result: FeetechScan) {
+    setScan(result);
+    setBusMotors(result.motors.map((motor) => ({ id: motor.id, model: motor.model })));
+    const positions = Object.fromEntries(result.motors.map((motor) => [motor.id, motor.position]));
+    setTargets(positions);
+    setHistory(result.motors.length ? [{ capturedAt: Date.now(), positions }] : []);
+    setControlArmed(false); setLiveError(null);
+  }
+
   async function refresh() {
     if (!deviceId) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setNotice(null); setEditingId(null);
     try {
       const result = await postJson<FeetechScan>('/api/maintenance/feetech/scan', { device_id: deviceId, baudrate });
-      setScan(result);
-      setBusMotors(result.motors.map((motor) => ({ id: motor.id, model: motor.model })));
-      const initialPositions = Object.fromEntries(result.motors.map((motor) => [motor.id, motor.position]));
-      setTargets(initialPositions);
-      setHistory(result.motors.length ? [{ capturedAt: Date.now(), positions: initialPositions }] : []);
-      setControlArmed(false); setLiveError(null);
+      applyScan(result);
     } catch (scanError) { setError(scanError instanceof Error ? scanError.message : '扫描失败'); }
     finally { setBusy(false); }
   }
@@ -743,12 +751,44 @@ function FeetechPanel({ saved }: { saved: DeviceConfiguration }) {
     finally { setActingId(null); }
   }
 
+  function editMotorId(motorId: number) {
+    setEditingId(motorId); setDraftId(String(motorId)); setError(null); setNotice(null);
+  }
+
+  async function changeMotorId(motor: FeetechMotor) {
+    if (!deviceId || !scan) return;
+    const nextId = Number(draftId);
+    if (!Number.isInteger(nextId) || nextId < 0 || nextId > 253) return setError('舵机 ID 必须是 0–253 之间的整数');
+    if (nextId === motor.id) return setError('新 ID 必须与当前 ID 不同');
+    if (scan.motors.some((item) => item.id === nextId)) return setError(`ID ${nextId} 已被总线上的其他舵机使用`);
+    if (!window.confirm(`确定把舵机 ID ${motor.id} 修改为 ID ${nextId}？\n\n写入 EEPROM 时会关闭该舵机扭矩。请确保供电稳定、目标 ID 未被占用。SO-101 标准关节通常使用 ID 1–6。`)) return;
+
+    setActingId(motor.id); setError(null); setNotice(null); setBusMotors([]);
+    try {
+      const result = await postJson<FeetechIdChange>('/api/maintenance/feetech/action', {
+        device_id: deviceId, baudrate, motor_id: motor.id, action: 'set_id', value: nextId, confirmed: true,
+      });
+      const rescanned = await postJson<FeetechScan>('/api/maintenance/feetech/scan', { device_id: deviceId, baudrate });
+      applyScan(rescanned); setEditingId(null);
+      setNotice(`ID ${result.old_id} 已修改为 ID ${result.new_id}，并已重新扫描总线。`);
+    } catch (actionError) {
+      const message = actionError instanceof Error ? actionError.message : '修改舵机 ID 失败';
+      try {
+        const rescanned = await postJson<FeetechScan>('/api/maintenance/feetech/scan', { device_id: deviceId, baudrate });
+        applyScan(rescanned);
+      } catch { setScan(null); }
+      setError(message);
+      setEditingId(null);
+    } finally { setActingId(null); }
+  }
+
   return <section className="feetech-panel">
     <div className="feetech-toolbar">
-      <div className="controller-field"><div className="field-label"><label htmlFor="feetech-controller">控制器</label><button className="text-button inline-icon" type="button" onClick={() => void loadDevices()} disabled={devicesLoading}><RefreshCw size={15} />{devicesLoading ? '刷新中' : '刷新'}</button></div><select id="feetech-controller" value={deviceId} onChange={(event) => { setDeviceId(event.target.value); setScan(null); setBusMotors([]); setHistory([]); }}>{devices.map((device) => <option value={device.id} title={device.id} key={device.id}>{serialLabel(device)}</option>)}</select></div>
-      <label>波特率<select value={baudrate} onChange={(event) => { setBaudrate(Number(event.target.value)); setScan(null); setBusMotors([]); setHistory([]); }}>{baudrates.map((value) => <option value={value} key={value}>{value.toLocaleString()}</option>)}</select></label>
+      <div className="controller-field"><div className="field-label"><label htmlFor="feetech-controller">控制器</label><button className="text-button inline-icon" type="button" onClick={() => void loadDevices()} disabled={devicesLoading}><RefreshCw size={15} />{devicesLoading ? '刷新中' : '刷新'}</button></div><select id="feetech-controller" value={deviceId} onChange={(event) => { setDeviceId(event.target.value); setScan(null); setBusMotors([]); setHistory([]); setEditingId(null); setNotice(null); }}>{devices.map((device) => <option value={device.id} title={device.id} key={device.id}>{serialLabel(device)}</option>)}</select></div>
+      <label>波特率<select value={baudrate} onChange={(event) => { setBaudrate(Number(event.target.value)); setScan(null); setBusMotors([]); setHistory([]); setEditingId(null); setNotice(null); }}>{baudrates.map((value) => <option value={value} key={value}>{value.toLocaleString()}</option>)}</select></label>
       <button className="primary inline-icon" type="button" onClick={() => void refresh()} disabled={busy || !deviceId}><RefreshCw size={16} />{busy ? '扫描中' : '扫描总线'}</button>
     </div>
+    {notice && <div className="success compact">{notice}</div>}
     {error && <div className="error compact">{error}</div>}
     {scan && scan.motors.length === 0 && <p className="empty">这个控制器下没有发现飞特舵机。</p>}
     {scan && scan.motors.length > 0 && <div className="bus-workspace">
@@ -760,7 +800,17 @@ function FeetechPanel({ saved }: { saved: DeviceConfiguration }) {
         return <div className="servo-control-row" key={motor.id}>
           <div className="servo-row-title"><div><strong>ID {motor.id}</strong><span>{motor.model}</span></div><div className="servo-readouts"><span>{motor.position}</span><small>{motor.temperature} °C · {motor.voltage.toFixed(1)} V</small></div></div>
           <div className="position-control"><span>0</span><input type="range" min="0" max="4095" step="1" value={target} disabled={!controlArmed || !motor.torque_enabled || working} onPointerDown={() => setDraggingId(motor.id)} onChange={(event) => setTargets((current) => ({ ...current, [motor.id]: Number(event.target.value) }))} onPointerUp={(event) => { setDraggingId(null); void action(motor.id, 'move', Number(event.currentTarget.value)); }} onKeyUp={(event) => { if (event.key === 'Enter') void action(motor.id, 'move', Number(event.currentTarget.value)); }} /><span>4095</span><output>{target}</output></div>
-          <button className={`torque-button ${motor.torque_enabled ? 'enabled' : ''}`} type="button" disabled={working || (!controlArmed && !motor.torque_enabled)} onClick={() => void action(motor.id, motor.torque_enabled ? 'torque_disable' : 'torque_enable')}>{working ? '处理中' : motor.torque_enabled ? '扭矩已开启' : '开启扭矩'}</button>
+          <div className="servo-row-actions">
+            <button className="outline servo-id-button" type="button" disabled={actingId !== null} onClick={() => editMotorId(motor.id)}>修改 ID</button>
+            <button className={`torque-button ${motor.torque_enabled ? 'enabled' : ''}`} type="button" disabled={working || (!controlArmed && !motor.torque_enabled)} onClick={() => void action(motor.id, motor.torque_enabled ? 'torque_disable' : 'torque_enable')}>{working ? '处理中' : motor.torque_enabled ? '扭矩已开启' : '开启扭矩'}</button>
+          </div>
+          {editingId === motor.id && <div className="servo-id-editor">
+            <label htmlFor={`servo-id-${motor.id}`}>新 ID</label>
+            <input id={`servo-id-${motor.id}`} type="number" min="0" max="253" step="1" value={draftId} onChange={(event) => setDraftId(event.target.value)} autoFocus />
+            <span>目标 ID 必须空闲；写入时会关闭该舵机扭矩。SO-101 标准关节通常使用 ID 1–6。</span>
+            <button className="outline" type="button" onClick={() => setEditingId(null)}>取消</button>
+            <button className="primary" type="button" disabled={working} onClick={() => void changeMotorId(motor)}>{working ? '写入中' : '写入并重新扫描'}</button>
+          </div>}
         </div>;
       })}</div>
     </div>}

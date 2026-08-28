@@ -402,6 +402,10 @@ def create_app():
 
     @app.post("/api/maintenance/feetech/action")
     async def control_feetech_servo(body: FeetechActionRequest):
+        if body.action in {"set_id", "set_baudrate"}:
+            if jobs.current is not None:
+                raise HTTPException(409, "硬件任务运行中，不能修改舵机配置")
+            await asyncio.to_thread(stop_motion_identification)
         events.publish(
             Operation.DIAGNOSTICS,
             Phase.RUNNING,
@@ -413,7 +417,12 @@ def create_app():
         except (ConnectionError, OSError, RuntimeError, ValueError) as error:
             events.publish(Operation.DIAGNOSTICS, Phase.FAILED, str(error))
             raise HTTPException(400, str(error)) from error
-        events.publish(Operation.DIAGNOSTICS, Phase.COMPLETED, "舵机操作完成")
+        message = (
+            f"舵机 ID {body.motor_id} 已修改为 {body.value}"
+            if body.action == "set_id"
+            else "舵机操作完成"
+        )
+        events.publish(Operation.DIAGNOSTICS, Phase.COMPLETED, message)
         return result
 
     @app.post("/api/maintenance/feetech/snapshot")

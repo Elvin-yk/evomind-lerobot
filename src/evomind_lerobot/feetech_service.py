@@ -185,6 +185,10 @@ def run_feetech_action(request: FeetechActionRequest) -> dict[str, Any]:
         model = _MODEL_BY_NUMBER.get(model_number) if model_number is not None else None
         if model is None:
             raise ValueError(f"Motor {request.motor_id} was not found or is unsupported")
+        assert model_number is not None
+        if request.action == "set_id":
+            assert request.value is not None
+            _validate_id_change(found, request.motor_id, request.value)
 
         name = f"motor_{request.motor_id}"
         motor = Motor(request.motor_id, model, MotorNormMode.RANGE_M100_100)
@@ -196,9 +200,36 @@ def run_feetech_action(request: FeetechActionRequest) -> dict[str, Any]:
         finally:
             bus.disconnect(disable_torque=False)
 
-    if request.action in {"set_id", "set_baudrate"}:
+        if request.action == "set_id":
+            assert request.value is not None
+            with _open_bus(request.device_id, request.baudrate) as probe:
+                verified = probe.broadcast_ping(num_retry=2, raise_on_error=True) or {}
+            _verify_id_change(verified, request.motor_id, request.value, model_number)
+            return {
+                "status": "completed",
+                "rescan_required": True,
+                "old_id": request.motor_id,
+                "new_id": request.value,
+                "model": model,
+            }
+
+    if request.action == "set_baudrate":
         return {"status": "completed", "rescan_required": True}
     return scan_feetech(FeetechScanRequest(device_id=request.device_id, baudrate=request.baudrate))
+
+
+def _validate_id_change(found: dict[int, int], old_id: int, new_id: int) -> None:
+    if new_id == old_id:
+        raise ValueError("新 ID 必须与当前 ID 不同")
+    if new_id in found:
+        raise ValueError(f"ID {new_id} 已被总线上的其他舵机使用")
+
+
+def _verify_id_change(found: dict[int, int], old_id: int, new_id: int, model_number: int) -> None:
+    if found.get(new_id) != model_number:
+        raise RuntimeError(f"ID 写入后未检测到新 ID {new_id}，请重新扫描总线")
+    if old_id in found:
+        raise RuntimeError(f"ID 写入后旧 ID {old_id} 仍然存在，请检查是否连接了重复 ID 的舵机")
 
 
 def _apply_action(bus: FeetechMotorsBus, name: str, request: FeetechActionRequest) -> None:
@@ -209,6 +240,7 @@ def _apply_action(bus: FeetechMotorsBus, name: str, request: FeetechActionReques
     elif request.action == "move":
         bus.write("Goal_Position", name, request.value, normalize=False, num_retry=1)
     elif request.action == "set_id":
+        assert request.value is not None
         bus.disable_torque(name, num_retry=1)
         bus.write("ID", name, request.value, normalize=False, num_retry=1)
     elif request.action == "set_baudrate":
