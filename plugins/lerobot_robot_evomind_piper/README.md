@@ -16,8 +16,10 @@ pip install -e '.[console,piperx]'
 pip install -e plugins/lerobot_robot_evomind_piper
 ```
 
-Configure all detected adapters as classic CAN at 1 Mbit/s before starting the
-console:
+The plugin ensures classic CAN at 1 Mbit/s immediately before opening each
+PiperX adapter. The service account needs `CAP_NET_ADMIN` and `CAP_NET_RAW`, but
+does not need to run as root. The setup command remains available for manual
+diagnostics:
 
 ```bash
 sudo lerobot-piper-setup-can

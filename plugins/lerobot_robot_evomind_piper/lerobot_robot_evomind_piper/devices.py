@@ -19,6 +19,7 @@ from lerobot.teleoperators.config import TeleoperatorConfig
 from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
+from .can_setup import ensure_piper_can_ready
 from .common import (
     PIPER_ACTION_KEYS,
     PIPER_JOINT_ACTION_KEYS,
@@ -28,7 +29,6 @@ from .common import (
     get_piper_sdk,
     milli_to_unit,
     parse_piper_log_level,
-    resolve_piper_can_interface,
     set_piper_role,
     unit_to_milli,
     wait_enable_piper,
@@ -140,7 +140,7 @@ class PiperXFollower(Robot):
         self.config = config
         interface_cls, _ = get_piper_sdk()
         self.arm = interface_cls(
-            can_name=resolve_piper_can_interface(config.port),
+            can_name=ensure_piper_can_ready(config.port),
             judge_flag=config.judge_flag,
             can_auto_init=config.can_auto_init,
             logger_level=parse_piper_log_level(config.log_level),
@@ -285,7 +285,7 @@ class PiperXLeader(Teleoperator):
         self._last_mode_refresh_t = 0.0
         interface_cls, _ = get_piper_sdk()
         self.arm = interface_cls(
-            can_name=resolve_piper_can_interface(config.port),
+            can_name=ensure_piper_can_ready(config.port),
             judge_flag=config.judge_flag,
             can_auto_init=config.can_auto_init,
             logger_level=parse_piper_log_level(config.log_level),

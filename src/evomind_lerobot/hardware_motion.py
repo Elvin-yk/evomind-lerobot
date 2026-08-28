@@ -287,17 +287,21 @@ class PiperMotionDetector:
     """Watch Piper feedback without changing role or sending motion targets."""
 
     def __init__(self, interface: str) -> None:
+        self.interface = interface
+        self.arm: Any | None = None
+        self.last_positions: dict[str, dict[int, int]] = {}
+
+    def start(self, *, release_motors: bool, timeout_s: float = 0.4) -> None:
+        from lerobot_robot_evomind_piper.can_setup import ensure_can_interface_ready
         from piper_sdk import C_PiperInterface_V2, LogLevel
 
+        interface = ensure_can_interface_ready(self.interface)
         self.arm = C_PiperInterface_V2(
             can_name=interface,
             judge_flag=False,
             can_auto_init=True,
             logger_level=LogLevel.WARNING,
         )
-        self.last_positions: dict[str, dict[int, int]] = {}
-
-    def start(self, *, release_motors: bool, timeout_s: float = 0.4) -> None:
         self.arm.ConnectPort(can_init=True, piper_init=False)
         if release_motors:
             self._disable_motors()
@@ -361,7 +365,9 @@ class PiperMotionDetector:
         return {"delta": delta, "moved": delta > PIPER_MOTION_THRESHOLD}
 
     def stop(self) -> None:
-        self.arm.DisconnectPort()
+        if self.arm is not None:
+            self.arm.DisconnectPort()
+            self.arm = None
 
 
 class PiperMotionSession:

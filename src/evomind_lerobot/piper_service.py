@@ -72,9 +72,22 @@ def _can_device(device_id: str) -> dict[str, Any]:
     )
     if device is None:
         raise ValueError("SocketCAN device is no longer connected")
-    if not device["up"] or device["bitrate"] != 1_000_000:
-        raise ValueError("这个 CAN 接口尚未以 1 Mbit/s 启用")
-    return device
+    from lerobot_robot_evomind_piper.can_setup import ensure_can_interface_ready
+
+    ensure_can_interface_ready(str(device["interface"]))
+    refreshed = next(
+        (
+            item
+            for item in hardware_inventory()["socketcan"]
+            if item["id"] == device_id
+        ),
+        None,
+    )
+    if refreshed is None:
+        raise ValueError("SocketCAN device is no longer connected")
+    if not refreshed["up"] or refreshed["bitrate"] != 1_000_000:
+        raise ValueError("这个 CAN 接口无法以 1 Mbit/s 启用")
+    return refreshed
 
 
 def _number(value: Any, default: int = 0) -> int:
