@@ -121,6 +121,17 @@ async function postJson<T>(url: string, body: unknown = {}): Promise<T> {
   return requestJson<T>(url, 'POST', body);
 }
 
+function newestRuntimeEvent(...events: Array<RuntimeEvent | null | undefined>): RuntimeEvent | null {
+  return events.reduce<RuntimeEvent | null>((newest, candidate) => {
+    if (!candidate) return newest;
+    if (!newest) return candidate;
+    const newestTimestamp = Date.parse(newest.timestamp) || 0;
+    const candidateTimestamp = Date.parse(candidate.timestamp) || 0;
+    if (candidateTimestamp !== newestTimestamp) return candidateTimestamp > newestTimestamp ? candidate : newest;
+    return candidate.sequence > newest.sequence ? candidate : newest;
+  }, null);
+}
+
 function hardwareSlots(profile: SystemProfile | undefined): HardwareSlot[] {
   if (!profile) return [];
   const slot = (id: string, label: string, kind: SerialKind, side: Side): HardwareSlot => ({
@@ -203,6 +214,10 @@ export default function Home() {
   const runtimeSounds = useRuntimeSounds(runtimeEvent);
 
   useEffect(() => {
+    if (status?.runtime.hostname) document.title = `${status.runtime.hostname} · LeRobot`;
+  }, [status?.runtime.hostname]);
+
+  useEffect(() => {
     Promise.all([readJson<RuntimeStatus>('/api/status'), readJson<Catalog>('/api/catalog'), readJson<DeviceConfiguration | null>('/api/config'), readJson<WorkspaceInventory>('/api/workspace')])
       .then(([nextStatus, nextCatalog, configuration, nextWorkspace]) => {
         setStatus(nextStatus); setRuntimeEvent(nextStatus.event); setCatalog(nextCatalog); setSaved(configuration); setWorkspace(nextWorkspace); setEditing(!configuration);
@@ -220,9 +235,39 @@ export default function Home() {
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/events`);
-    socket.onmessage = (message) => setRuntimeEvent(JSON.parse(message.data) as RuntimeEvent);
-    return () => socket.close();
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let disposed = false;
+
+    const refreshLatest = () => {
+      readJson<RuntimeStatus>('/api/status')
+        .then((nextStatus) => setRuntimeEvent((current) => newestRuntimeEvent(current, nextStatus.event)))
+        .catch(() => undefined);
+    };
+    const connect = () => {
+      if (disposed) return;
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/events`);
+      socket.onmessage = (message) => {
+        const nextEvent = JSON.parse(message.data) as RuntimeEvent;
+        setRuntimeEvent((current) => newestRuntimeEvent(current, nextEvent));
+      };
+      socket.onclose = () => {
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 1000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') refreshLatest();
+    };
+
+    connect();
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
   }, []);
 
   const refreshWorkspace = useCallback(() => {
@@ -412,7 +457,7 @@ export default function Home() {
       <div className="runtime"><i />{!collapsed && <div><strong>{status ? '运行正常' : '正在连接'}</strong><span>LeRobot {status?.lerobot_version ?? '—'}</span></div>}</div>
     </aside>
     <main>
-      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '4090-c'}</p><h1>{title}</h1></div>{(['teleoperation', 'recording', 'datasets', 'inference'] as PageId[]).includes(activePage) ? <div className="header-workflow-status" ref={setWorkflowStatusSlot} /> : activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <ChevronDown className="recognition-chevron" size={15} strokeWidth={1.8} /></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
+      <header><div><p>EVOMIND / {status?.runtime.hostname ?? '本机'}</p><h1>{title}</h1></div>{(['teleoperation', 'recording', 'datasets', 'inference'] as PageId[]).includes(activePage) ? <div className="header-workflow-status" ref={setWorkflowStatusSlot} /> : activePage === 'device' && saved && !editing && !identifying && <div className="header-actions"><details className="header-recognition"><summary className="outline">重新识别 <ChevronDown className="recognition-chevron" size={15} strokeWidth={1.8} /></summary><div><button type="button" onClick={() => void beginIdentification('hardware')}>本体</button><button type="button" onClick={() => void beginIdentification('sensors')}>传感器</button><button type="button" onClick={() => void beginIdentification('all')}>全部设备</button></div></details><button className="outline" type="button" onClick={reconfigure}>重新配置</button></div>}</header>
       {error && <div className="error">{error}</div>}
       {activePage === 'device' && (!editing && saved ? ready && !identifying ? <DeviceOverview configuration={saved} model={savedModel} /> : !identifying ? <DeviceActivation model={savedModel} busy={busy} onStart={() => void beginIdentification()} /> : <IdentificationStep slots={hardwareSlots(savedProfile)} cameras={cameras} mode={mode} showHardware={identificationScope !== 'sensors'} showSensors={identificationScope !== 'hardware'} serialAssignments={serialAssignments} canAssignments={canAssignments} cameraAssignments={cameraAssignments} cameraPreviews={cameraPreviews} motionPorts={motionPorts} motionStarting={motionStarting} cameraLoading={cameraLoading || busy} busy={busy} onRestartMotion={() => void restartMotionIdentification()} onRefreshCameras={() => { setCameraAssignments({}); void refreshCameras().catch((cameraError) => setError(cameraError instanceof Error ? cameraError.message : '摄像头读取失败')); }} onCameraSelect={(cameraId, deviceId) => setCameraAssignments((current) => ({ ...current, [cameraId]: deviceId }))} onSave={() => void saveIdentification()} /> : <section className="device-setup">
         <div className="device-setup-steps">{createSteps.map((item, index) => {
@@ -970,9 +1015,10 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   const selectedTask = dailyTasks.find((item) => item.id === taskId);
   const runningThis = runtime.running && runtime.operation === content.operation;
   const runningOther = runtime.running && !runningThis;
-  const event = runtimeEvent?.operation === content.operation
-    ? runtimeEvent
-    : runtime.event?.operation === content.operation ? runtime.event : null;
+  const event = newestRuntimeEvent(
+    runtimeEvent?.operation === content.operation ? runtimeEvent : null,
+    runtime.event?.operation === content.operation ? runtime.event : null,
+  );
   const visibleError = operationError || (event?.phase === 'failed' ? event.message : '');
 
   useEffect(() => {

@@ -24,19 +24,23 @@ function isEpisodeStart(event: RuntimeEvent) {
     && event.data.stage === 'episode';
 }
 
-function soundForEvent(event: RuntimeEvent, startedJobs: Set<string>): SoundName | null {
+function soundForEvent(
+  event: RuntimeEvent,
+  startedJobs: Set<string>,
+  previousPhase: string | undefined,
+): SoundName | null {
   if (event.operation !== 'recording') return null;
 
   const jobId = event.job_id;
   if (event.data.stage === 'episode_saved') return 'episodeSaved';
-  if (event.phase === 'resetting' && event.data.rerecord_episode === true) return 'rerecording';
+  if (event.phase === 'resetting' && previousPhase !== 'resetting' && event.data.rerecord_episode === true) return 'rerecording';
   if (isEpisodeStart(event)) {
     if (!jobId || startedJobs.has(jobId)) return null;
     startedJobs.add(jobId);
     return 'recordingStarted';
   }
   if (event.phase === 'saving') return 'episodeSaving';
-  if (event.phase === 'resetting') return 'resetting';
+  if (event.phase === 'resetting' && previousPhase !== 'resetting') return 'resetting';
   if (event.phase === 'completed') {
     if (jobId) startedJobs.delete(jobId);
     return 'recordingCompleted';
@@ -55,6 +59,7 @@ export function useRuntimeSounds(event: RuntimeEvent | null) {
   const lastEvent = useRef<{ sequence: number; timestamp: number } | null>(null);
   const startedJobs = useRef(new Set<string>());
   const finishedJobs = useRef(new Set<string>());
+  const phaseByJob = useRef(new Map<string, string>());
 
   const play = useCallback(async (name: SoundName) => {
     const audio = audioRef.current ?? new Audio();
@@ -84,19 +89,23 @@ export function useRuntimeSounds(event: RuntimeEvent | null) {
     const timestamp = Date.parse(event.timestamp) || 0;
     if (lastEvent.current === null) {
       lastEvent.current = { sequence: event.sequence, timestamp };
+      phaseByJob.current.set(event.job_id ?? event.operation, event.phase);
       if (isEpisodeStart(event) && event.job_id) startedJobs.current.add(event.job_id);
       if ((event.phase === 'completed' || event.phase === 'failed') && event.job_id) finishedJobs.current.add(event.job_id);
       return;
     }
     if (event.sequence <= lastEvent.current.sequence && timestamp <= lastEvent.current.timestamp) return;
     lastEvent.current = { sequence: event.sequence, timestamp };
+    const phaseKey = event.job_id ?? event.operation;
+    const previousPhase = phaseByJob.current.get(phaseKey);
+    phaseByJob.current.set(phaseKey, event.phase);
 
     if ((event.phase === 'completed' || event.phase === 'failed') && event.job_id) {
       if (finishedJobs.current.has(event.job_id)) return;
       finishedJobs.current.add(event.job_id);
     }
 
-    const sound = soundForEvent(event, startedJobs.current);
+    const sound = soundForEvent(event, startedJobs.current, previousPhase);
     if (!enabled || !ready || !sound) return;
     void play(sound).catch(() => setReady(false));
   }, [enabled, event, play, ready]);

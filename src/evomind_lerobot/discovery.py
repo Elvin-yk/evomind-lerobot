@@ -227,7 +227,7 @@ def hardware_inventory() -> dict[str, Any]:
         "video": video_devices,
         "cameras": _camera_devices(video_devices),
         "platform": os.uname().sysname,
-        "hostname": os.uname().nodename,
+        "hostname": os.environ.get("EVOMIND_WORKSTATION_NAME") or os.uname().nodename,
     }
 
 
@@ -257,7 +257,7 @@ def runtime_inventory() -> dict[str, Any]:
     existing_root = data_root if data_root.exists() else Path.home()
     disk = shutil.disk_usage(existing_root)
     return {
-        "hostname": os.uname().nodename,
+        "hostname": os.environ.get("EVOMIND_WORKSTATION_NAME") or os.uname().nodename,
         "python_version": ".".join(str(part) for part in sys.version_info[:3]),
         "lerobot_version": _package_version("lerobot"),
         "torch_version": _package_version("torch"),
