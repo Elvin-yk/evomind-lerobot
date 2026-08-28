@@ -66,12 +66,14 @@ from evomind_lerobot.piper_service import (
 )
 from evomind_lerobot.runtime_service import (
     HardwareBusyError,
+    PolicyInspectRequest,
     RecordingStartRequest,
     ReplayStartRequest,
     RolloutStartRequest,
     RuntimeCommandRequest,
     RuntimeService,
     TeleoperationStartRequest,
+    inspect_policy_compatibility,
 )
 from evomind_lerobot.workspace import workspace_inventory
 
@@ -537,6 +539,13 @@ def create_app():
             return runtime.start(Operation.ROLLOUT, body)
         except HardwareBusyError as error:
             raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/runtime/policy/inspect")
+    def runtime_policy_inspect(body: PolicyInspectRequest):
+        try:
+            return inspect_policy_compatibility(body)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(400, str(error)) from error
 
     @app.post("/api/runtime/replay/start")
     def runtime_replay_start(body: ReplayStartRequest):

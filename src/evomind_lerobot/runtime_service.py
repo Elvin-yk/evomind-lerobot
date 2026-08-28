@@ -16,8 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from evomind_lerobot.collection_store import CollectionStore, CollectionStoreError
 from evomind_lerobot.device_config import (
-    CanBinding,
     CameraBinding,
+    CanBinding,
     DeviceConfiguration,
     SerialBinding,
     calibration_path,
@@ -47,15 +47,32 @@ class RecordingExecutionRequest(RecordingStartRequest):
 
 
 class RolloutStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     policy_path: str = Field(min_length=1)
-    strategy: Literal["episodic", "sentry"] = "episodic"
+    strategy: Literal[
+        "base",
+        "episodic",
+        "sentry",
+        "highlight",
+        "dagger_corrections",
+        "dagger_continuous",
+    ] = "base"
+    inference: Literal["sync", "rtc"] = "sync"
     task: str = Field(min_length=1, max_length=500)
-    dataset_name: str = Field(default="policy-rollout", min_length=1, max_length=80)
+    dataset_name: str = Field(default="rollout_policy-rollout", min_length=1, max_length=80)
     fps: int = Field(default=30, ge=1, le=60)
     duration_s: int = Field(default=120, ge=1, le=86_400)
     num_episodes: int = Field(default=10, ge=1, le=10_000)
     episode_time_s: int = Field(default=30, ge=1, le=86_400)
     reset_time_s: int = Field(default=10, ge=0, le=86_400)
+    ring_buffer_seconds: int = Field(default=10, ge=1, le=300)
+
+
+class PolicyInspectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_path: str = Field(min_length=1)
 
 
 class ReplayStartRequest(BaseModel):
@@ -64,7 +81,14 @@ class ReplayStartRequest(BaseModel):
 
 
 class RuntimeCommandRequest(BaseModel):
-    command: Literal["stop", "finish_episode", "rerecord_episode"]
+    command: Literal[
+        "stop",
+        "finish_episode",
+        "rerecord_episode",
+        "pause_resume",
+        "correction",
+        "toggle_highlight",
+    ]
 
 
 _MESSAGES = {
@@ -120,6 +144,22 @@ def _repo_id(value: str) -> str:
     if not repo_id:
         raise ValueError("数据集 repo id 不能为空")
     return repo_id
+
+
+def _rollout_repo_id(value: str) -> str:
+    """Ensure rollout datasets follow LeRobot's required basename convention."""
+    repo_id = _repo_id(value)
+    namespace, separator, name = repo_id.rpartition("/")
+    if not name.startswith("rollout_"):
+        name = f"rollout_{name}"
+    return f"{namespace}/{name}" if separator else name
+
+
+def _policy_path(value: str) -> str:
+    """Accept either a Hub repo id, local path, or a pasted Hugging Face URL."""
+    path = value.strip().rstrip("/")
+    match = re.fullmatch(r"https?://huggingface\.co/([^/]+/[^/]+)(?:/.*)?", path)
+    return match.group(1) if match else path
 
 
 def _recording_dataset_name(task: dict[str, Any]) -> str:
@@ -179,22 +219,90 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
     camera_bindings = configuration.camera_bindings if cameras else []
     dual = {binding.side for binding in bindings} >= {"left", "right"}
     if dual:
-        socketcan = all(isinstance(binding, CanBinding) for binding in bindings)
+        supports_top_level_cameras = configuration.robot_type == "bi_so_follower"
         for side in ("left", "right"):
             binding = next(item for item in bindings if item.side == side)
             side_cameras = {
                 _camera_key(camera.alias, side): _camera_config(camera, fps)
                 for camera in camera_bindings
-                if camera.side == side or (socketcan and side == "right" and camera.side == "single")
+                if camera.side == side
+                or (not supports_top_level_cameras and side == "right" and camera.side == "single")
             }
             payload[f"{side}_arm_config"] = {
                 "port": _binding_port(binding),
                 "cameras": side_cameras,
             }
+        # Bimanual LeRobot robots expose top-level cameras without a left/right
+        # prefix.  Keeping environment cameras here also avoids silently dropping
+        # them on serial dual-arm configurations.
+        if supports_top_level_cameras:
+            payload["cameras"] = {
+                camera.alias: _camera_config(camera, fps)
+                for camera in camera_bindings
+                if camera.side == "single"
+            }
     elif bindings:
         payload["port"] = _binding_port(bindings[0])
         payload["cameras"] = {camera.alias: _camera_config(camera, fps) for camera in camera_bindings}
     return payload
+
+
+def _configured_visual_features(configuration: DeviceConfiguration) -> set[str]:
+    """Return policy-facing visual keys without opening cameras or serial ports."""
+    bindings = _device_bindings(configuration, "robot")
+    dual = {binding.side for binding in bindings} >= {"left", "right"}
+    keys: set[str] = set()
+    for camera in configuration.camera_bindings:
+        if dual and camera.side in {"left", "right"}:
+            name = f"{camera.side}_{_camera_key(camera.alias, camera.side)}"
+        elif dual and configuration.robot_type != "bi_so_follower":
+            name = f"right_{camera.alias}"
+        else:
+            name = camera.alias
+        keys.add(f"observation.images.{name}")
+    return keys
+
+
+def _configured_vector_dimensions(configuration: DeviceConfiguration) -> tuple[int | None, int | None]:
+    """Infer fixed arm vector dimensions for compatibility checks."""
+    robot_count = len(_device_bindings(configuration, "robot"))
+    if configuration.robot_type in {"so100_follower", "so101_follower", "bi_so_follower"}:
+        dimension = 6 * robot_count
+        return dimension, dimension
+    return None, None
+
+
+def _camera_rename_map(
+    configuration: DeviceConfiguration,
+    expected: set[str],
+    provided: set[str],
+) -> dict[str, str]:
+    """Resolve unambiguous camera aliases, primarily environment -> front."""
+    missing = expected - provided
+    extra = provided - expected
+    if not missing or not extra:
+        return {}
+
+    slot_by_feature = {
+        f"observation.images.{slot.alias}": slot
+        for slot in configuration.camera_slots
+        if slot.side == "single"
+    }
+    rename_map: dict[str, str] = {}
+    for source in sorted(extra):
+        slot = slot_by_feature.get(source)
+        if slot is None:
+            continue
+        candidates = [
+            target
+            for target in missing
+            if slot.kind == "environment"
+            and any(token in target.rsplit(".", 1)[-1] for token in ("front", "environment", "top"))
+        ]
+        if len(candidates) == 1:
+            rename_map[source] = candidates[0]
+            missing.remove(candidates[0])
+    return rename_map
 
 
 def _teleoperator_payload(configuration: DeviceConfiguration) -> dict[str, Any] | None:
@@ -316,41 +424,148 @@ def _execute_recording(payload: dict[str, Any]) -> None:
     )
 
 
+def inspect_policy_compatibility(request: PolicyInspectRequest) -> dict[str, Any]:
+    """Inspect checkpoint metadata and compare it with configured hardware.
+
+    This deliberately downloads only metadata/configuration files.  It never
+    loads model weights, opens cameras, connects serial ports, or moves a robot.
+    """
+    from lerobot import policies as _policy_configs  # noqa: F401
+    from lerobot.configs import FeatureType, PreTrainedConfig
+    from lerobot.utils.import_utils import register_third_party_plugins
+
+    register_third_party_plugins()
+    path = _policy_path(request.policy_path)
+    policy = PreTrainedConfig.from_pretrained(path)
+    configuration = _configuration()
+
+    expected_visuals = {
+        key for key, feature in policy.input_features.items() if feature.type == FeatureType.VISUAL
+    }
+    provided_visuals = _configured_visual_features(configuration)
+    rename_map = _camera_rename_map(configuration, expected_visuals, provided_visuals)
+    renamed_visuals = {rename_map.get(key, key) for key in provided_visuals}
+
+    state_feature = policy.input_features.get("observation.state")
+    action_feature = policy.output_features.get("action")
+    state_dim = state_feature.shape[-1] if state_feature and state_feature.shape else None
+    action_dim = action_feature.shape[-1] if action_feature and action_feature.shape else None
+    hardware_state_dim, hardware_action_dim = _configured_vector_dimensions(configuration)
+
+    issues: list[str] = []
+    missing_visuals = sorted(expected_visuals - renamed_visuals)
+    if missing_visuals:
+        issues.append(f"缺少模型摄像头输入：{', '.join(missing_visuals)}")
+    if hardware_state_dim is not None and state_dim is not None and hardware_state_dim != state_dim:
+        issues.append(f"状态维度不匹配：模型 {state_dim}，设备 {hardware_state_dim}")
+    if hardware_action_dim is not None and action_dim is not None and hardware_action_dim != action_dim:
+        issues.append(f"动作维度不匹配：模型 {action_dim}，设备 {hardware_action_dim}")
+
+    revision: str | None = None
+    size_bytes: int | None = None
+    if not os.path.exists(path):
+        try:
+            from huggingface_hub import HfApi
+
+            info = HfApi().model_info(path, files_metadata=True)
+            revision = info.sha
+            sizes = [sibling.size for sibling in info.siblings if sibling.size is not None]
+            size_bytes = sum(sizes) if sizes else None
+        except Exception:
+            logging.info("Could not read optional Hub model metadata for %s", path, exc_info=True)
+
+    return {
+        "policy_path": path,
+        "policy_type": policy.type,
+        "revision": revision,
+        "size_bytes": size_bytes,
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+        "hardware_state_dim": hardware_state_dim,
+        "hardware_action_dim": hardware_action_dim,
+        "expected_visuals": sorted(expected_visuals),
+        "provided_visuals": sorted(provided_visuals),
+        "rename_map": rename_map,
+        "supports_rtc": policy.type in {"pi0", "pi05", "pi0_fast"},
+        "compatible": not issues,
+        "issues": issues,
+    }
+
+
 def _execute_rollout(payload: dict[str, Any]) -> None:
     from lerobot.configs import PreTrainedConfig
     from lerobot.configs.dataset import DatasetRecordConfig
     from lerobot.configs.video import RGBEncoderConfig
-    from lerobot.rollout.configs import EpisodicStrategyConfig, RolloutConfig, SentryStrategyConfig
+    from lerobot.rollout.configs import (
+        BaseStrategyConfig,
+        DAggerStrategyConfig,
+        EpisodicStrategyConfig,
+        HighlightStrategyConfig,
+        RolloutConfig,
+        SentryStrategyConfig,
+    )
+    from lerobot.rollout.inference import RTCInferenceConfig, SyncInferenceConfig
     from lerobot.scripts.lerobot_rollout import rollout
 
     request = RolloutStartRequest.model_validate(payload)
-    robot, teleop = _decode_hardware(_configuration(), request.fps)
-    policy = PreTrainedConfig.from_pretrained(request.policy_path)
-    policy.pretrained_path = request.policy_path
-    dataset = DatasetRecordConfig(
-        repo_id=_repo_id(request.dataset_name),
-        single_task=request.task,
-        fps=request.fps,
-        num_episodes=request.num_episodes,
-        episode_time_s=request.episode_time_s,
-        reset_time_s=request.reset_time_s,
-        push_to_hub=False,
-        streaming_encoding=True,
-        encoder_threads=2,
-        encoder_queue_maxsize=30,
-        rgb_encoder=RGBEncoderConfig(vcodec="h264"),
+    configuration = _configuration()
+    inspection = inspect_policy_compatibility(PolicyInspectRequest(policy_path=request.policy_path))
+    if not inspection["compatible"]:
+        raise ValueError("Policy 与当前设备不兼容：" + "；".join(inspection["issues"]))
+
+    needs_teleop = request.strategy in {"episodic", "dagger_corrections", "dagger_continuous"}
+    robot, teleop = _decode_hardware(
+        configuration,
+        request.fps,
+        include_teleoperator=needs_teleop,
     )
-    strategy = EpisodicStrategyConfig() if request.strategy == "episodic" else SentryStrategyConfig()
+    policy_path = _policy_path(request.policy_path)
+    policy = PreTrainedConfig.from_pretrained(policy_path)
+    policy.pretrained_path = policy_path
+
+    dataset = None
+    if request.strategy != "base":
+        dataset = DatasetRecordConfig(
+            repo_id=_rollout_repo_id(request.dataset_name),
+            single_task=request.task,
+            fps=request.fps,
+            num_episodes=request.num_episodes,
+            episode_time_s=request.episode_time_s,
+            reset_time_s=request.reset_time_s,
+            push_to_hub=False,
+            streaming_encoding=True,
+            encoder_threads=2,
+            encoder_queue_maxsize=30,
+            rgb_encoder=RGBEncoderConfig(vcodec="h264"),
+        )
+
+    strategy = {
+        "base": BaseStrategyConfig(),
+        "episodic": EpisodicStrategyConfig(),
+        "sentry": SentryStrategyConfig(),
+        "highlight": HighlightStrategyConfig(ring_buffer_seconds=request.ring_buffer_seconds),
+        "dagger_corrections": DAggerStrategyConfig(
+            num_episodes=request.num_episodes,
+            record_autonomous=False,
+        ),
+        "dagger_continuous": DAggerStrategyConfig(
+            num_episodes=request.num_episodes,
+            record_autonomous=True,
+        ),
+    }[request.strategy]
+    inference = RTCInferenceConfig() if request.inference == "rtc" else SyncInferenceConfig()
     rollout(
         RolloutConfig(
             robot=robot,
-            teleop=teleop if request.strategy == "episodic" else None,
+            teleop=teleop if needs_teleop else None,
             policy=policy,
             strategy=strategy,
+            inference=inference,
             dataset=dataset,
             fps=request.fps,
             duration=request.duration_s,
             task=request.task,
+            rename_map=inspection["rename_map"],
             display_data=False,
             play_sounds=False,
         )
@@ -521,7 +736,13 @@ class RuntimeService:
             operation = self._operation
         if process is None or not process.is_alive() or command_queue is None:
             raise RuntimeError("当前没有运行中的任务")
-        if command != "stop" and operation is not Operation.RECORDING:
+        recording_commands = {"finish_episode", "rerecord_episode"}
+        rollout_commands = recording_commands | {"pause_resume", "correction", "toggle_highlight"}
+        if command != "stop" and operation is Operation.RECORDING and command not in recording_commands:
+            raise ValueError("当前采集任务不支持这个操作")
+        if command != "stop" and operation is Operation.ROLLOUT and command not in rollout_commands:
+            raise ValueError("当前 Rollout 不支持这个操作")
+        if command != "stop" and operation not in {Operation.RECORDING, Operation.ROLLOUT}:
             raise ValueError("当前任务不支持这个操作")
         command_queue.put(command)
         if command == "stop" and operation is Operation.ROLLOUT:
@@ -600,10 +821,12 @@ class RuntimeService:
 
 __all__ = [
     "HardwareBusyError",
+    "PolicyInspectRequest",
     "RecordingStartRequest",
     "ReplayStartRequest",
     "RolloutStartRequest",
     "RuntimeCommandRequest",
     "RuntimeService",
     "TeleoperationStartRequest",
+    "inspect_policy_compatibility",
 ]

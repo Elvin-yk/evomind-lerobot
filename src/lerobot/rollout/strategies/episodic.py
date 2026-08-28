@@ -43,6 +43,7 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.keyboard_input import init_keyboard_listener
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import emit_runtime_event, take_runtime_commands
 from lerobot.utils.utils import log_say
 from lerobot.utils.visualization_utils import log_visualization_data
 
@@ -120,6 +121,15 @@ class EpisodicStrategy(RolloutStrategy):
                     self._engine.resume()
 
                     log_say(f"Recording episode {dataset.num_episodes}", play_sounds)
+                    emit_runtime_event(
+                        "rollout",
+                        "running",
+                        strategy="episodic",
+                        rollout_phase="recording",
+                        episode=recorded_episodes + 1,
+                        total_episodes=num_episodes,
+                        records_data=True,
+                    )
                     self._policy_loop(
                         ctx=ctx,
                         robot=robot,
@@ -136,6 +146,15 @@ class EpisodicStrategy(RolloutStrategy):
                         recorded_episodes < num_episodes - 1 or events["rerecord_episode"]
                     ):
                         log_say("Reset the environment", play_sounds)
+                        emit_runtime_event(
+                            "rollout",
+                            "running",
+                            strategy="episodic",
+                            rollout_phase="resetting",
+                            episode=recorded_episodes + 1,
+                            total_episodes=num_episodes,
+                            records_data=True,
+                        )
 
                         if teleop:
                             # Smooth handover so the transition to teleop control is jerk-free.
@@ -222,6 +241,8 @@ class EpisodicStrategy(RolloutStrategy):
         while timestamp < control_time_s:
             loop_start = time.perf_counter()
 
+            self._take_runtime_commands(events)
+
             if events["exit_early"]:
                 events["exit_early"] = False
                 break
@@ -277,6 +298,8 @@ class EpisodicStrategy(RolloutStrategy):
         while timestamp < control_time_s:
             loop_start = time.perf_counter()
 
+            self._take_runtime_commands(events)
+
             if events["exit_early"]:
                 events["exit_early"] = False
                 break
@@ -305,6 +328,15 @@ class EpisodicStrategy(RolloutStrategy):
             sleep_t = control_interval - dt
             precise_sleep(max(sleep_t, 0.0))
             timestamp = time.perf_counter() - start_t
+
+    @staticmethod
+    def _take_runtime_commands(events: dict) -> None:
+        commands = take_runtime_commands()
+        if "finish_episode" in commands:
+            events["exit_early"] = True
+        if "rerecord_episode" in commands:
+            events["rerecord_episode"] = True
+            events["exit_early"] = True
 
     def teardown(self, ctx: RolloutContext) -> None:
         """Finalise dataset, stop listener, push to hub, and disconnect hardware."""

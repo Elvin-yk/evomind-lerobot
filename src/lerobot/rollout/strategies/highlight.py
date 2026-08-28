@@ -27,6 +27,11 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.keyboard_input import create_key_listener
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import (
+    emit_runtime_event,
+    runtime_bridge_active,
+    take_runtime_commands,
+)
 from lerobot.utils.utils import log_say
 
 from ..configs import HighlightStrategyConfig
@@ -81,7 +86,8 @@ class HighlightStrategy(RolloutStrategy):
             self.config.ring_buffer_seconds,
             self.config.ring_buffer_max_memory_mb,
         )
-        self._setup_keyboard(ctx.runtime.shutdown_event)
+        if not runtime_bridge_active():
+            self._setup_keyboard(ctx.runtime.shutdown_event)
         logger.info(
             "Highlight strategy ready (buffer=%.0fs, save='%s', push='%s')",
             self.config.ring_buffer_seconds,
@@ -103,6 +109,13 @@ class HighlightStrategy(RolloutStrategy):
 
         engine.resume()
         play_sounds = cfg.play_sounds
+        emit_runtime_event(
+            "rollout",
+            "running",
+            strategy="highlight",
+            rollout_phase="buffering",
+            records_data=True,
+        )
 
         start_time = time.perf_counter()
         task_str = cfg.dataset.single_task if cfg.dataset else cfg.task
@@ -112,6 +125,9 @@ class HighlightStrategy(RolloutStrategy):
             try:
                 while not ctx.runtime.shutdown_event.is_set():
                     loop_start = time.perf_counter()
+
+                    if "toggle_highlight" in take_runtime_commands():
+                        self._save_requested.set()
 
                     if cfg.duration > 0 and (time.perf_counter() - start_time) >= cfg.duration:
                         logger.info("Duration limit reached (%.0fs)", cfg.duration)
@@ -145,6 +161,13 @@ class HighlightStrategy(RolloutStrategy):
                                 for buffered_frame in ring.drain():
                                     dataset.add_frame(buffered_frame)
                                 self._recording_live.set()
+                                emit_runtime_event(
+                                    "rollout",
+                                    "running",
+                                    strategy="highlight",
+                                    rollout_phase="recording",
+                                    records_data=True,
+                                )
                             else:
                                 dataset.add_frame(frame)
                                 with self._episode_lock:
@@ -155,6 +178,14 @@ class HighlightStrategy(RolloutStrategy):
                                     play_sounds,
                                 )
                                 self._recording_live.clear()
+                                emit_runtime_event(
+                                    "rollout",
+                                    "running",
+                                    strategy="highlight",
+                                    rollout_phase="buffering",
+                                    records_data=True,
+                                    saved_episodes=dataset.num_episodes,
+                                )
                                 continue  # frame already consumed — skip ring.append
 
                         if self._push_requested.is_set():

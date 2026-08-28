@@ -66,6 +66,11 @@ from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.keyboard_input import create_key_listener
 from lerobot.utils.pedal import start_pedal_listener
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import (
+    emit_runtime_event,
+    runtime_bridge_active,
+    take_runtime_commands,
+)
 from lerobot.utils.utils import log_say
 
 from ..configs import DAggerKeyboardConfig, DAggerPedalConfig, DAggerStrategyConfig
@@ -257,10 +262,11 @@ class DAggerStrategy(RolloutStrategy):
             ctx.data.dataset_features, ctx.runtime.cfg.fps, target_size_mb=target_mb
         )
 
-        if self.config.input_device == "keyboard":
-            self._listener = _init_dagger_keyboard(self._events, self.config.keyboard)
-        else:
-            self._pedal_thread = _init_dagger_pedal(self._events, self.config.pedal)
+        if not runtime_bridge_active():
+            if self.config.input_device == "keyboard":
+                self._listener = _init_dagger_keyboard(self._events, self.config.keyboard)
+            else:
+                self._pedal_thread = _init_dagger_pedal(self._events, self.config.pedal)
 
         record_mode = "all frames (sentry-like)" if self.config.record_autonomous else "corrections only"
         logger.info(
@@ -277,6 +283,24 @@ class DAggerStrategy(RolloutStrategy):
             self._run_continuous(ctx)
         else:
             self._run_corrections_only(ctx)
+
+    def _take_runtime_transitions(self) -> None:
+        """Route web controls through the same validated DAgger state machine."""
+        commands = take_runtime_commands()
+        if "pause_resume" in commands:
+            self._events.request_transition("pause_resume")
+        if "correction" in commands:
+            self._events.request_transition("correction")
+
+    def _emit_phase(self, phase: DAggerPhase) -> None:
+        emit_runtime_event(
+            "rollout",
+            "running",
+            strategy="dagger",
+            rollout_phase=phase.value,
+            records_data=True,
+            record_autonomous=self.config.record_autonomous,
+        )
 
     def teardown(self, ctx: RolloutContext) -> None:
         """Stop listeners, finalise the dataset, and disconnect hardware."""
@@ -343,6 +367,7 @@ class DAggerStrategy(RolloutStrategy):
         interpolator.reset()
         events.reset()
         engine.resume()
+        self._emit_phase(DAggerPhase.AUTONOMOUS)
 
         last_action: dict[str, Any] | None = None
         record_tick = 0
@@ -356,6 +381,8 @@ class DAggerStrategy(RolloutStrategy):
             try:
                 while not events.stop_recording.is_set() and not ctx.runtime.shutdown_event.is_set():
                     loop_start = time.perf_counter()
+
+                    self._take_runtime_transitions()
 
                     if cfg.duration > 0 and (time.perf_counter() - start_time) >= cfg.duration:
                         logger.info("Duration limit reached (%.0fs)", cfg.duration)
@@ -373,6 +400,7 @@ class DAggerStrategy(RolloutStrategy):
                             ctx,
                             last_action,
                         )
+                        self._emit_phase(new_phase)
                         if new_phase == DAggerPhase.AUTONOMOUS:
                             last_action = None
 
@@ -500,6 +528,7 @@ class DAggerStrategy(RolloutStrategy):
         interpolator.reset()
         events.reset()
         engine.resume()
+        self._emit_phase(DAggerPhase.AUTONOMOUS)
 
         last_action: dict[str, Any] | None = None
         start_time = time.perf_counter()
@@ -518,6 +547,8 @@ class DAggerStrategy(RolloutStrategy):
                 ):
                     loop_start = time.perf_counter()
 
+                    self._take_runtime_transitions()
+
                     if cfg.duration > 0 and (time.perf_counter() - start_time) >= cfg.duration:
                         logger.info("Duration limit reached (%.0fs)", cfg.duration)
                         break
@@ -534,6 +565,7 @@ class DAggerStrategy(RolloutStrategy):
                             ctx,
                             last_action,
                         )
+                        self._emit_phase(new_phase)
                         if new_phase == DAggerPhase.AUTONOMOUS:
                             last_action = None
 
