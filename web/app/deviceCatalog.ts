@@ -69,7 +69,14 @@ export const createSteps: { id: CreateStepId; label: string }[] = [
 
 const modelDefinitions: Omit<DeviceModelOption, 'variants'>[] = [
   { id: 'so101', title: 'SO-101', category: 'arm', description: '桌面机械臂', image: '/devices/so101.webp', imageAlt: 'SO-101 机械臂' },
-  { id: 'piperx', title: 'PiperX', category: 'arm', description: 'SocketCAN 工业机械臂' },
+  {
+    id: 'piperx',
+    title: 'PiperX',
+    category: 'arm',
+    description: 'SocketCAN 工业机械臂',
+    image: '/devices/piperx-card.webp',
+    imageAlt: 'AgileX PiPER-X 工业机械臂',
+  },
   { id: 'openarm', title: 'OpenArm', category: 'arm', description: '开源机械臂', image: '/devices/openarm.png', imageAlt: 'OpenArm 机械臂' },
   { id: 'rebot', title: 'reBot', category: 'arm', description: '桌面机械臂', image: '/devices/rebot.jpg', imageAlt: 'reBot B601-DM 机械臂' },
   { id: 'omx', title: 'OMX', category: 'arm', description: '桌面机械臂', image: '/devices/omx.webp', imageAlt: 'OMX 机械臂' },
