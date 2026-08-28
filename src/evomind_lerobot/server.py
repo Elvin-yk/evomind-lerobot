@@ -351,6 +351,11 @@ def create_app():
             if current_configuration
             else set()
         )
+        unchanged_can = (
+            {(binding.alias, binding.id) for binding in current_configuration.can_bindings}
+            if current_configuration
+            else set()
+        )
         unchanged_cameras = (
             {(binding.alias, binding.id, binding.port) for binding in current_configuration.camera_bindings}
             if current_configuration
@@ -363,6 +368,8 @@ def create_app():
             if device is None or binding.port != device["path"]:
                 raise HTTPException(400, f"Serial device is no longer connected: {binding.id}")
         for binding in configuration.can_bindings:
+            if (binding.alias, binding.id) in unchanged_can:
+                continue
             if binding.id not in can_devices:
                 raise HTTPException(400, f"SocketCAN device is no longer connected: {binding.id}")
         for binding in configuration.camera_bindings:
