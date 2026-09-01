@@ -26,7 +26,7 @@ from evomind_lerobot.device_config import (
 )
 from evomind_lerobot.events import EventBroker, Operation, Phase
 from evomind_lerobot.jobs import HardwareBusyError, JobManager
-from evomind_lerobot.workspace import datasets_inventory
+from evomind_lerobot.workspace import datasets_inventory, policies_inventory
 
 
 class TeleoperationStartRequest(BaseModel):
@@ -34,6 +34,12 @@ class TeleoperationStartRequest(BaseModel):
 
 
 class RecordingStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+
+
+class CollectionStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str = Field(min_length=1)
@@ -160,6 +166,15 @@ def _policy_path(value: str) -> str:
     path = value.strip().rstrip("/")
     match = re.fullmatch(r"https?://huggingface\.co/([^/]+/[^/]+)(?:/.*)?", path)
     return match.group(1) if match else path
+
+
+def require_local_policy(value: str) -> str:
+    """Resolve a policy selected from the local workspace inventory."""
+    selected = value.strip()
+    for policy in policies_inventory():
+        if selected in {policy["id"], policy["path"]}:
+            return policy["path"]
+    raise ValueError("选择的 Policy 不在本机模型目录中")
 
 
 def _recording_dataset_name(task: dict[str, Any]) -> str:
@@ -656,11 +671,12 @@ class RuntimeService:
         self._operation: Operation | None = None
         self._latest: dict[str, Any] | None = None
         self._active_dataset_id: str | None = None
+        self._tracked_collection = False
 
     @property
     def active_dataset_id(self) -> str | None:
         with self._lock:
-            return self._active_dataset_id if self._operation is Operation.RECORDING else None
+            return self._active_dataset_id if self._tracked_collection else None
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -675,31 +691,76 @@ class RuntimeService:
     def start(self, operation: Operation, request: BaseModel) -> dict[str, Any]:
         if operation.value not in _EXECUTORS:
             raise ValueError(f"不支持的运行任务：{operation.value}")
-        payload = request.model_dump()
+        collection_task: dict[str, Any] | None = None
         if operation is Operation.RECORDING:
             if self._collection_store is None or not isinstance(request, RecordingStartRequest):
                 raise RuntimeError("采集进度账本未初始化")
-            task = self._collection_store.require_today_task(request.task_id)
+            collection_task = self._collection_store.require_today_task(request.task_id)
+            if collection_task["collection_method"] != "manual":
+                raise ValueError("该任务是 Policy 采集任务，请使用统一采集入口")
+        return self._start(operation, request, collection_task)
+
+    def start_collection(self, request: CollectionStartRequest) -> dict[str, Any]:
+        if self._collection_store is None:
+            raise RuntimeError("采集进度账本未初始化")
+        task = self._collection_store.require_today_task(request.task_id)
+        if task["collection_method"] == "manual":
+            return self._start(Operation.RECORDING, RecordingStartRequest(task_id=task["id"]), task)
+
+        local_policy = require_local_policy(task["policy_path"])
+        inspection = inspect_policy_compatibility(PolicyInspectRequest(policy_path=local_policy))
+        if not inspection["compatible"]:
+            raise ValueError("Policy 与当前设备不兼容：" + "；".join(inspection["issues"]))
+        rollout_request = RolloutStartRequest(
+            policy_path=local_policy,
+            strategy=task["rollout_strategy"],
+            inference=task["inference"],
+            task=task["description"],
+            dataset_name=_recording_dataset_name(task),
+            fps=task["fps"],
+            duration_s=task["duration_s"],
+            num_episodes=task["num_episodes"],
+            episode_time_s=task["episode_time_s"],
+            reset_time_s=task["reset_time_s"],
+            ring_buffer_seconds=task["ring_buffer_seconds"],
+        )
+        return self._start(Operation.ROLLOUT, rollout_request, task)
+
+    def _start(
+        self,
+        operation: Operation,
+        request: BaseModel,
+        collection_task: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = request.model_dump()
+        if operation is Operation.RECORDING and collection_task is not None:
             payload.update(
                 {
-                    "fps": task["fps"],
-                    "num_episodes": task["num_episodes"],
-                    "episode_time_s": task["episode_time_s"],
-                    "reset_time_s": task["reset_time_s"],
+                    "fps": collection_task["fps"],
+                    "num_episodes": collection_task["num_episodes"],
+                    "episode_time_s": collection_task["episode_time_s"],
+                    "reset_time_s": collection_task["reset_time_s"],
                 }
             )
-            payload["_task_description"] = task["description"]
-            payload["_dataset_name"] = _recording_dataset_name(task)
+            payload["_task_description"] = collection_task["description"]
+            payload["_dataset_name"] = _recording_dataset_name(collection_task)
         job = self._jobs.acquire(operation, f"正在启动 {operation.value}")
-        if operation is Operation.RECORDING:
+        if collection_task is not None:
             try:
+                execution_request: RecordingExecutionRequest | RolloutStartRequest
+                if operation is Operation.RECORDING:
+                    execution_request = RecordingExecutionRequest.model_validate(
+                        {key: value for key, value in payload.items() if not key.startswith("_")}
+                    )
+                    dataset_name = payload["_dataset_name"]
+                else:
+                    execution_request = RolloutStartRequest.model_validate(payload)
+                    dataset_name = execution_request.dataset_name
                 self._collection_store.start_session(
                     job.id,
-                    request.task_id,
-                    payload["_dataset_name"],
-                    RecordingExecutionRequest.model_validate(
-                        {key: value for key, value in payload.items() if not key.startswith("_")}
-                    ),
+                    collection_task["id"],
+                    dataset_name,
+                    execution_request,
                 )
             except Exception:
                 self._jobs.release(job.id, failed=True, message="采集任务启动失败")
@@ -717,12 +778,13 @@ class RuntimeService:
             self._command_queue = command_queue
             self._job_id = job.id
             self._operation = operation
+            self._tracked_collection = collection_task is not None
             self._latest = self._events.latest.as_dict()
         try:
             process.start()
         except Exception:
             self._clear()
-            if operation is Operation.RECORDING and self._collection_store is not None:
+            if collection_task is not None and self._collection_store is not None:
                 self._collection_store.finish_session(job.id, failed=True, error="运行任务启动失败")
             self._jobs.release(job.id, failed=True, message="运行任务启动失败")
             raise
@@ -757,6 +819,7 @@ class RuntimeService:
                 event_queue = self._event_queue
                 job_id = self._job_id
                 operation = self._operation
+                tracked_collection = self._tracked_collection
             if process is None or event_queue is None or operation is None:
                 return
             try:
@@ -770,6 +833,14 @@ class RuntimeService:
                 break
             phase = Phase(item["phase"])
             message = _MESSAGES.get((item["operation"], item["phase"]), item["phase"])
+            if tracked_collection and operation is Operation.ROLLOUT:
+                message = {
+                    "starting": "正在加载采集 Policy",
+                    "connecting": "正在连接 Policy 采集设备",
+                    "running": "Policy 数据采集中",
+                    "stopping": "正在停止 Policy 采集",
+                    "completed": "Policy 采集已结束",
+                }.get(item["phase"], message)
             event = self._events.publish(
                 Operation(item["operation"]),
                 phase,
@@ -777,7 +848,7 @@ class RuntimeService:
                 job_id=job_id,
                 data=item["data"],
             )
-            if operation is Operation.RECORDING and self._collection_store is not None:
+            if tracked_collection and self._collection_store is not None:
                 try:
                     data = item["data"]
                     if data.get("repo_id"):
@@ -787,7 +858,7 @@ class RuntimeService:
                     if data.get("stage") == "episode_saved":
                         self._collection_store.save_episode(job_id, data)
                 except (CollectionStoreError, KeyError, TypeError, ValueError, sqlite3.Error):
-                    logging.exception("Failed to persist recording progress")
+                    logging.exception("Failed to persist collection progress")
             with self._lock:
                 self._latest = event.as_dict()
         process.join(timeout=1)
@@ -800,7 +871,7 @@ class RuntimeService:
             )
             with self._lock:
                 self._latest = event.as_dict()
-        if operation is Operation.RECORDING and self._collection_store is not None:
+        if tracked_collection and self._collection_store is not None:
             self._collection_store.finish_session(job_id, failed=bool(error), error=error)
         self._clear()
         self._jobs.release(
@@ -817,10 +888,12 @@ class RuntimeService:
             self._job_id = ""
             self._operation = None
             self._active_dataset_id = None
+            self._tracked_collection = False
 
 
 __all__ = [
     "HardwareBusyError",
+    "CollectionStartRequest",
     "PolicyInspectRequest",
     "RecordingStartRequest",
     "ReplayStartRequest",
@@ -829,4 +902,5 @@ __all__ = [
     "RuntimeService",
     "TeleoperationStartRequest",
     "inspect_policy_compatibility",
+    "require_local_policy",
 ]

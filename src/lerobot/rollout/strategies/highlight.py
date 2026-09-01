@@ -37,7 +37,7 @@ from lerobot.utils.utils import log_say
 from ..configs import HighlightStrategyConfig
 from ..context import RolloutContext
 from ..ring_buffer import RolloutRingBuffer
-from .core import RolloutStrategy, safe_push_to_hub, send_next_action
+from .core import RolloutStrategy, safe_push_to_hub, save_episode_and_emit, send_next_action
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ class HighlightStrategy(RolloutStrategy):
                             else:
                                 dataset.add_frame(frame)
                                 with self._episode_lock:
-                                    dataset.save_episode()
+                                    save_episode_and_emit(dataset, ctx, strategy="highlight")
                                 logger.info("Episode saved (total: %d)", dataset.num_episodes)
                                 log_say(
                                     f"Episode {dataset.num_episodes} saved",
@@ -209,9 +209,9 @@ class HighlightStrategy(RolloutStrategy):
             finally:
                 logger.info("Highlight control loop ended")
                 if self._recording_live.is_set():
-                    logger.info("Saving in-progress live episode")
+                    logger.info("Discarding unfinished highlight episode")
                     with contextlib.suppress(Exception), self._episode_lock:
-                        dataset.save_episode()
+                        dataset.clear_episode_buffer()
 
     def teardown(self, ctx: RolloutContext) -> None:
         """Stop listeners, finalise the dataset, and disconnect hardware."""

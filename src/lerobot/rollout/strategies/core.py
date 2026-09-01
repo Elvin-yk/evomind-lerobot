@@ -26,6 +26,7 @@ from lerobot.utils.action_interpolator import ActionInterpolator
 from lerobot.utils.constants import OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_bridge import emit_runtime_event
 from lerobot.utils.visualization_utils import log_visualization_data
 
 from ..inference import InferenceEngine
@@ -201,6 +202,30 @@ def safe_push_to_hub(dataset, tags=None, private=False) -> bool:
         return False
     dataset.push_to_hub(tags=tags, private=private)
     return True
+
+
+def save_episode_and_emit(dataset, ctx: RolloutContext, *, strategy: str) -> int:
+    """Save one rollout episode and publish progress only after it reaches disk."""
+    dataset_cfg = ctx.runtime.cfg.dataset
+    if dataset_cfg is None:
+        raise RuntimeError("当前 Rollout 没有数据集配置")
+    episode_index = dataset.num_episodes
+    frames = int(dataset.writer.episode_buffer["size"])
+    dataset.save_episode()
+    emit_runtime_event(
+        "rollout",
+        "running",
+        stage="episode_saved",
+        strategy=strategy,
+        repo_id=dataset_cfg.repo_id,
+        episode_index=episode_index,
+        frames=frames,
+        fps=dataset_cfg.fps,
+        duration_s=frames / dataset_cfg.fps,
+        saved_episodes=dataset.num_episodes,
+        target_episodes=dataset_cfg.num_episodes,
+    )
+    return episode_index
 
 
 def estimate_max_episode_seconds(

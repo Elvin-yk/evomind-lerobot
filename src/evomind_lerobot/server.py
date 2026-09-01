@@ -7,6 +7,7 @@ import os
 from datetime import date
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Literal
 
 try:
     from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -65,6 +66,7 @@ from evomind_lerobot.piper_service import (
     snapshot_piper,
 )
 from evomind_lerobot.runtime_service import (
+    CollectionStartRequest,
     HardwareBusyError,
     PolicyInspectRequest,
     RecordingStartRequest,
@@ -74,6 +76,7 @@ from evomind_lerobot.runtime_service import (
     RuntimeService,
     TeleoperationStartRequest,
     inspect_policy_compatibility,
+    require_local_policy,
 )
 from evomind_lerobot.workspace import workspace_inventory
 
@@ -100,6 +103,14 @@ class CollectionTaskCreateRequest(BaseModel):
     episode_time_s: int = Field(default=30, ge=1, le=86_400)
     reset_time_s: int = Field(default=10, ge=0, le=86_400)
     fps: int = Field(default=30, ge=1, le=60)
+    collection_method: Literal["manual", "policy"] = "manual"
+    policy_path: str = ""
+    rollout_strategy: Literal[
+        "episodic", "sentry", "highlight", "dagger_corrections", "dagger_continuous"
+    ] = "episodic"
+    inference: Literal["sync", "rtc"] = "sync"
+    duration_s: int = Field(default=120, ge=1, le=86_400)
+    ring_buffer_seconds: int = Field(default=10, ge=1, le=300)
 
     @field_validator("name", "description")
     @classmethod
@@ -112,19 +123,42 @@ class CollectionTaskCreateRequest(BaseModel):
 
 class CollectionTaskUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=500)
     target_duration_s: float = Field(gt=0, le=604_800)
     num_episodes: int = Field(default=20, ge=1, le=10_000)
     episode_time_s: int = Field(default=30, ge=1, le=86_400)
     reset_time_s: int = Field(default=10, ge=0, le=86_400)
     fps: int = Field(default=30, ge=1, le=60)
+    collection_method: Literal["manual", "policy"] = "manual"
+    policy_path: str = ""
+    rollout_strategy: Literal[
+        "episodic", "sentry", "highlight", "dagger_corrections", "dagger_continuous"
+    ] = "episodic"
+    inference: Literal["sync", "rtc"] = "sync"
+    duration_s: int = Field(default=120, ge=1, le=86_400)
+    ring_buffer_seconds: int = Field(default=10, ge=1, le=300)
 
-    @field_validator("name")
+    @field_validator("name", "description")
     @classmethod
     def reject_blank_text(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("内容不能为空")
         return value
+
+
+def _collection_task_settings(
+    body: CollectionTaskCreateRequest | CollectionTaskUpdateRequest,
+) -> dict[str, object]:
+    policy_path = require_local_policy(body.policy_path) if body.collection_method == "policy" else ""
+    return {
+        "collection_method": body.collection_method,
+        "policy_path": policy_path,
+        "rollout_strategy": body.rollout_strategy,
+        "inference": body.inference,
+        "duration_s": body.duration_s,
+        "ring_buffer_seconds": body.ring_buffer_seconds,
+    }
 
 
 def _package_version(name: str) -> str | None:
@@ -188,6 +222,7 @@ def create_app():
     @app.post("/api/collection/tasks")
     def create_collection_task(body: CollectionTaskCreateRequest):
         try:
+            policy_settings = _collection_task_settings(body)
             return collection_store.create_task(
                 work_date=body.work_date,
                 name=body.name,
@@ -197,22 +232,30 @@ def create_app():
                 episode_time_s=body.episode_time_s,
                 reset_time_s=body.reset_time_s,
                 fps=body.fps,
+                **policy_settings,
             )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
         except CollectionTaskConflictError as error:
             raise HTTPException(409, str(error)) from error
 
     @app.put("/api/collection/tasks/{task_id}")
     def update_collection_task(task_id: str, body: CollectionTaskUpdateRequest):
         try:
+            policy_settings = _collection_task_settings(body)
             return collection_store.update_task(
                 task_id,
                 name=body.name,
+                description=body.description,
                 target_duration_s=body.target_duration_s,
                 num_episodes=body.num_episodes,
                 episode_time_s=body.episode_time_s,
                 reset_time_s=body.reset_time_s,
                 fps=body.fps,
+                **policy_settings,
             )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
         except CollectionTaskNotFoundError as error:
             raise HTTPException(404, str(error)) from error
         except CollectionTaskConflictError as error:
@@ -529,8 +572,20 @@ def create_app():
             raise HTTPException(404, str(error)) from error
         except CollectionTaskConflictError as error:
             raise HTTPException(409, str(error)) from error
-        except HardwareBusyError as error:
+        except (HardwareBusyError, ValueError) as error:
             raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/runtime/collection/start")
+    def runtime_collection_start(body: CollectionStartRequest):
+        try:
+            close_piper_session()
+            return runtime.start_collection(body)
+        except CollectionTaskNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        except (CollectionTaskConflictError, HardwareBusyError) as error:
+            raise HTTPException(409, str(error)) from error
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(400, str(error)) from error
 
     @app.post("/api/runtime/rollout/start")
     def runtime_rollout_start(body: RolloutStartRequest):

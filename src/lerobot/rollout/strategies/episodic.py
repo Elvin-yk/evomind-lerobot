@@ -49,7 +49,7 @@ from lerobot.utils.visualization_utils import log_visualization_data
 
 from ..configs import EpisodicStrategyConfig
 from ..context import RolloutContext
-from .core import RolloutStrategy, safe_push_to_hub, send_next_action
+from .core import RolloutStrategy, safe_push_to_hub, save_episode_and_emit, send_next_action
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ class EpisodicStrategy(RolloutStrategy):
 
                         continue
 
-                    dataset.save_episode()
+                    save_episode_and_emit(dataset, ctx, strategy="episodic")
                     recorded_episodes += 1
             finally:
                 # Save any frames buffered in the current episode so an unexpected
@@ -218,7 +218,7 @@ class EpisodicStrategy(RolloutStrategy):
                 # suppress: save_episode raises if the buffer is empty (nothing to lose).
                 logger.info("Episodic control loop ended — saving any in-progress episode")
                 with contextlib.suppress(Exception):
-                    dataset.save_episode()
+                    save_episode_and_emit(dataset, ctx, strategy="episodic")
 
     def _policy_loop(
         self,

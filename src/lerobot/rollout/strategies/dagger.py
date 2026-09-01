@@ -75,7 +75,13 @@ from lerobot.utils.utils import log_say
 
 from ..configs import DAggerKeyboardConfig, DAggerPedalConfig, DAggerStrategyConfig
 from ..context import RolloutContext
-from .core import RolloutStrategy, estimate_max_episode_seconds, safe_push_to_hub, send_next_action
+from .core import (
+    RolloutStrategy,
+    estimate_max_episode_seconds,
+    safe_push_to_hub,
+    save_episode_and_emit,
+    send_next_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -465,7 +471,7 @@ class DAggerStrategy(RolloutStrategy):
                     elapsed = time.perf_counter() - episode_start
                     if elapsed >= episode_duration_s and phase != DAggerPhase.CORRECTING:
                         with self._episode_lock:
-                            dataset.save_episode()
+                            save_episode_and_emit(dataset, ctx, strategy="dagger_continuous")
                         episodes_since_push += 1
                         self._needs_push.set()
                         logger.info(
@@ -494,7 +500,7 @@ class DAggerStrategy(RolloutStrategy):
                 engine.pause()
                 with contextlib.suppress(Exception):
                     with self._episode_lock:
-                        dataset.save_episode()
+                        save_episode_and_emit(dataset, ctx, strategy="dagger_continuous")
                     self._needs_push.set()
                     logger.info("Final in-progress episode saved")
 
@@ -572,7 +578,7 @@ class DAggerStrategy(RolloutStrategy):
                         # Correction ended -> save episode (blocking if not streaming)
                         if old_phase == DAggerPhase.CORRECTING and new_phase == DAggerPhase.PAUSED:
                             with self._episode_lock:
-                                dataset.save_episode()
+                                save_episode_and_emit(dataset, ctx, strategy="dagger_corrections")
                             recorded += 1
                             self._needs_push.set()
                             logger.info(
@@ -647,7 +653,7 @@ class DAggerStrategy(RolloutStrategy):
                 engine.pause()
                 with contextlib.suppress(Exception):
                     with self._episode_lock:
-                        dataset.save_episode()
+                        save_episode_and_emit(dataset, ctx, strategy="dagger_corrections")
                     self._needs_push.set()
                     logger.info("Final in-progress episode saved")
 

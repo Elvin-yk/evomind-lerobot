@@ -31,7 +31,13 @@ from lerobot.utils.utils import log_say
 
 from ..configs import SentryStrategyConfig
 from ..context import RolloutContext
-from .core import RolloutStrategy, estimate_max_episode_seconds, safe_push_to_hub, send_next_action
+from .core import (
+    RolloutStrategy,
+    estimate_max_episode_seconds,
+    safe_push_to_hub,
+    save_episode_and_emit,
+    send_next_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +146,7 @@ class SentryStrategy(RolloutStrategy):
                         # ``push_to_hub`` (run in the background executor) so the
                         # pusher never reads a half-written episode.
                         with self._episode_lock:
-                            dataset.save_episode()
+                            save_episode_and_emit(dataset, ctx, strategy="sentry")
                         episodes_since_push += 1
                         self._needs_push.set()
                         logger.info(
@@ -168,7 +174,7 @@ class SentryStrategy(RolloutStrategy):
                 logger.info("Sentry control loop ended — saving final episode")
                 with contextlib.suppress(Exception):
                     with self._episode_lock:
-                        dataset.save_episode()
+                        save_episode_and_emit(dataset, ctx, strategy="sentry")
                     self._needs_push.set()
 
     def teardown(self, ctx: RolloutContext) -> None:

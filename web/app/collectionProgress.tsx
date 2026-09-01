@@ -11,11 +11,17 @@ type CollectionTask = {
   num_episodes: number; episode_time_s: number; reset_time_s: number; fps: number;
   session_count: number; progress_percent: number; completed: boolean; locked: boolean;
   collecting: boolean;
+  collection_method: 'manual' | 'policy'; policy_path: string;
+  rollout_strategy: PolicyStrategy; inference: 'sync' | 'rtc';
+  duration_s: number; ring_buffer_seconds: number;
 };
+type PolicyStrategy = 'episodic' | 'sentry' | 'highlight' | 'dagger_corrections' | 'dagger_continuous';
+type LocalPolicy = { id: string; path: string; type: string };
 type TrendItem = { date: string; target_duration_s: number; actual_duration_s: number; episode_count: number };
 type ActiveSession = {
   id: string; task_name: string; dataset_name: string; repo_id: string | null; work_date: string;
   saved_duration_s: number; saved_episodes: number; event: RuntimeEvent | null;
+  collection_method: 'manual' | 'policy'; rollout_strategy: PolicyStrategy | null; policy_path: string | null;
 };
 type ProgressPayload = {
   date: string;
@@ -32,6 +38,14 @@ const EMPTY_PROGRESS: ProgressPayload = {
   date: '',
   summary: { target_duration_s: 0, actual_duration_s: 0, progress_percent: 0, episode_count: 0, completed_tasks: 0, total_tasks: 0 },
   tasks: [], trend: [], active_session: null,
+};
+
+const policyStrategies: Record<PolicyStrategy, { label: string; detail: string }> = {
+  episodic: { label: 'Episodic', detail: '按 Episode 记录，轮次之间人工重置' },
+  sentry: { label: 'Sentry', detail: '持续自主推理并自动切分保存' },
+  highlight: { label: 'Highlight', detail: '用环形缓存保存选中的前后片段' },
+  dagger_corrections: { label: 'DAgger 纠正', detail: '只保存人工接管纠正片段' },
+  dagger_continuous: { label: 'DAgger 连续', detail: '保存自主和人工帧并标记 intervention' },
 };
 
 function shanghaiDate() {
@@ -120,7 +134,7 @@ export function StorageNotice({ initial, refreshKey = null }: { initial: Storage
   </div>;
 }
 
-export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: RuntimeEvent | null }) {
+export function CollectionProgressPage({ runtimeEvent, policies }: { runtimeEvent: RuntimeEvent | null; policies: LocalPolicy[] }) {
   const today = shanghaiDate();
   const [view, setView] = useState<'tasks' | 'stats'>('tasks');
   const [selectedDate, setSelectedDate] = useState(today);
@@ -136,6 +150,12 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   const [episodeTime, setEpisodeTime] = useState(30);
   const [resetTime, setResetTime] = useState(10);
   const [fps, setFps] = useState(30);
+  const [collectionMethod, setCollectionMethod] = useState<'manual' | 'policy'>('manual');
+  const [policyPath, setPolicyPath] = useState(policies[0]?.path ?? '');
+  const [strategy, setStrategy] = useState<PolicyStrategy>('episodic');
+  const [inference, setInference] = useState<'sync' | 'rtc'>('sync');
+  const [duration, setDuration] = useState(120);
+  const [ringBufferSeconds, setRingBufferSeconds] = useState(10);
 
   const refresh = useCallback(async () => {
     try {
@@ -151,7 +171,7 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     return () => window.clearTimeout(timer);
   }, [refresh]);
   useEffect(() => {
-    if (runtimeEvent?.operation !== 'recording') return undefined;
+    if (!runtimeEvent || !['recording', 'rollout'].includes(runtimeEvent.operation)) return undefined;
     const timer = window.setTimeout(() => void refresh(), 0);
     return () => window.clearTimeout(timer);
   }, [refresh, runtimeEvent]);
@@ -164,10 +184,13 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
   const resetForm = () => {
     setEditingId(null); setName(''); setDescription(''); setTargetMinutes(60);
     setNumEpisodes(20); setEpisodeTime(30); setResetTime(10); setFps(30);
+    setCollectionMethod('manual'); setPolicyPath(policies[0]?.path ?? '');
+    setStrategy('episodic'); setInference('sync'); setDuration(120); setRingBufferSeconds(10);
   };
 
   async function saveTask() {
-    if (!name.trim() || (!editingId && !description.trim()) || !Number.isFinite(targetMinutes) || targetMinutes <= 0) return;
+    if (!name.trim() || !description.trim() || !Number.isFinite(targetMinutes) || targetMinutes <= 0) return;
+    if (collectionMethod === 'policy' && !policyPath) { setError('请先选择本机 Policy'); return; }
     if (editingId && progress.tasks.find((task) => task.id === editingId)?.collecting) {
       setError('任务正在采集，不能修改');
       return;
@@ -176,10 +199,10 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     const editableFields = {
       name: name.trim(), target_duration_s: targetMinutes * 60,
       num_episodes: numEpisodes, episode_time_s: episodeTime, reset_time_s: resetTime, fps,
+      description: description.trim(), collection_method: collectionMethod, policy_path: policyPath,
+      rollout_strategy: strategy, inference, duration_s: duration, ring_buffer_seconds: ringBufferSeconds,
     };
-    const body = JSON.stringify(editingId ? editableFields : {
-      ...editableFields, work_date: selectedDate, description: description.trim(),
-    });
+    const body = JSON.stringify(editingId ? editableFields : { ...editableFields, work_date: selectedDate });
     try {
       await api(editingId ? `/api/collection/tasks/${editingId}` : '/api/collection/tasks', { method: editingId ? 'PUT' : 'POST', body });
       resetForm(); await refresh();
@@ -195,6 +218,10 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     setTargetMinutes(Math.max(1, Math.round(task.target_duration_s / 60)));
     setNumEpisodes(task.num_episodes); setEpisodeTime(task.episode_time_s);
     setResetTime(task.reset_time_s); setFps(task.fps);
+    setCollectionMethod(task.collection_method);
+    setPolicyPath(policies.some((policy) => policy.path === task.policy_path) ? task.policy_path : '');
+    setStrategy(task.rollout_strategy); setInference(task.inference);
+    setDuration(task.duration_s); setRingBufferSeconds(task.ring_buffer_seconds);
   }
 
   async function removeTask(taskId: string) {
@@ -204,11 +231,12 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
 
   const chartMaximum = useMemo(() => Math.max(1, ...progress.trend.flatMap((item) => [item.target_duration_s, item.actual_duration_s])), [progress.trend]);
   const event = progress.active_session?.event;
-  const stage = event?.data.stage ? String(event.data.stage) : event?.phase;
-  const currentEpisode = event?.data.episode;
+  const stage = event?.data.rollout_phase ? String(event.data.rollout_phase) : event?.data.stage ? String(event.data.stage) : event?.phase;
+  const currentEpisode = event?.data.episode ?? event?.data.episode_index;
   const isToday = selectedDate === today;
   const editingTask = progress.tasks.find((task) => task.id === editingId);
   const editingBlocked = Boolean(editingTask?.collecting);
+  const activePolicy = policies.find((policy) => policy.path === progress.active_session?.policy_path);
 
   return <section className="progress-page">
     <div className="progress-view-switch" role="tablist" aria-label="采集进度视图">
@@ -246,7 +274,7 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
     </section></>}
 
     {view === 'tasks' && <>{progress.active_session && <section className="active-collection-card">
-      <div><span>正在采集</span><strong>{progress.active_session.task_name}</strong><small>{progress.active_session.repo_id || progress.active_session.dataset_name}</small></div>
+      <div><span>{progress.active_session.collection_method === 'policy' ? 'Policy 采集' : '人工采集'}</span><strong>{progress.active_session.task_name}</strong><small>{progress.active_session.collection_method === 'policy' ? `${policyStrategies[progress.active_session.rollout_strategy ?? 'episodic'].label} · ${activePolicy?.id ?? '本地 Policy'}` : progress.active_session.repo_id || progress.active_session.dataset_name}</small></div>
       <div><span>当前阶段</span><strong>{event?.message || '正在启动数据采集'}</strong><small>{stage || 'starting'}{currentEpisode !== undefined ? ` · Episode ${String(currentEpisode)}` : ''}</small></div>
       <div><span>本次已保存</span><strong>{durationLabel(progress.active_session.saved_duration_s)}</strong><small>{progress.active_session.saved_episodes} Episodes</small></div>
     </section>}
@@ -255,8 +283,8 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
       <div className="section-heading"><div><span>{selectedDate}</span><h2>任务进度</h2></div></div>
       <div className="task-progress-list">
         {progress.tasks.map((task) => <article className="task-progress-row" key={task.id}>
-          <div className="task-progress-main"><div><strong>{task.name}</strong><p>{task.description}</p></div><span className={task.completed ? 'complete' : ''}>{task.completed ? '已完成' : '进行中'}</span></div>
-          <div className="task-progress-values"><strong>{durationLabel(task.actual_duration_s)} / {durationLabel(task.target_duration_s)}</strong><span>{task.episode_count} Episodes · {task.progress_percent.toFixed(0)}%</span><small>计划 {task.num_episodes} 轮 · {task.episode_time_s} 秒 · {task.fps} FPS</small></div>
+          <div className="task-progress-main"><div><strong>{task.name}</strong><p>{task.collection_method === 'policy' ? `Policy 采集 · ${policyStrategies[task.rollout_strategy].label}` : '人工采集'} · {task.description}</p></div><span className={task.completed ? 'complete' : ''}>{task.completed ? '已完成' : '进行中'}</span></div>
+          <div className="task-progress-values"><strong>{durationLabel(task.actual_duration_s)} / {durationLabel(task.target_duration_s)}</strong><span>{task.episode_count} Episodes · {task.progress_percent.toFixed(0)}%</span><small>{task.collection_method === 'policy' ? `${policyStrategies[task.rollout_strategy].label} · ${task.inference === 'rtc' ? 'RTC' : '同步'} · 最长 ${task.duration_s} 秒` : `计划 ${task.num_episodes} 轮 · ${task.episode_time_s} 秒`} · {task.fps} FPS</small></div>
           <div className="progress-track"><i style={{ width: `${Math.min(task.progress_percent, 100)}%` }} /></div>
           {isToday && <div className="task-row-actions"><button className="text-button" type="button" onClick={() => beginEdit(task)} disabled={task.collecting} title={task.collecting ? '正在采集，不能编辑' : undefined}>编辑</button>{!task.locked && <button className="icon-button" type="button" onClick={() => void removeTask(task.id)} aria-label={`删除${task.name}`}><Trash2 size={15} /></button>}</div>}
         </article>)}
@@ -270,14 +298,17 @@ export function CollectionProgressPage({ runtimeEvent }: { runtimeEvent: Runtime
       <div className="form-grid">
         <label>任务名称<input value={name} onChange={(item) => setName(item.target.value)} disabled={editingBlocked} placeholder="例如：积木入盒" /></label>
         <label>目标时长（分钟）<TaskNumberInput value={targetMinutes} onCommit={setTargetMinutes} min={1} max={10_080} disabled={editingBlocked} /></label>
-        <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={Boolean(editingId)} placeholder="写入 LeRobot 数据集的完整任务描述" />{editingId && <small>任务描述创建后不可修改</small>}</label>
+        <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={editingBlocked} placeholder="写入 LeRobot 数据集的完整任务描述" /></label>
+        <label className="full-field">采集方式<select value={collectionMethod} onChange={(item) => setCollectionMethod(item.target.value as 'manual' | 'policy')} disabled={editingBlocked || Boolean(editingTask?.locked)}><option value="manual">人工采集</option><option value="policy">Policy 采集</option></select>{editingTask?.locked && <small>已有采集记录后，采集方式保持不变</small>}</label>
         <div className="full-field task-settings-label">采集设置</div>
-        <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={editingBlocked} /></label>
-        <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={editingBlocked} /></label>
-        <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={editingBlocked} /></label>
+        {collectionMethod === 'policy' && <><label className="full-field">本地 Policy<select value={policyPath} onChange={(item) => setPolicyPath(item.target.value)} disabled={editingBlocked}>{policies.length === 0 && <option value="">本机未发现模型</option>}{policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id} · {policy.type}</option>)}</select></label><label>采集策略<select value={strategy} onChange={(item) => setStrategy(item.target.value as PolicyStrategy)} disabled={editingBlocked}>{(Object.entries(policyStrategies) as Array<[PolicyStrategy, { label: string; detail: string }]>).map(([value, config]) => <option value={value} key={value}>{config.label}</option>)}</select></label><label>推理后端<select value={inference} onChange={(item) => setInference(item.target.value as 'sync' | 'rtc')} disabled={editingBlocked}><option value="sync">同步推理</option><option value="rtc">RTC 实时分块</option></select></label><div className="selected-task-description full-field"><span>{policyStrategies[strategy].label}</span><strong>{policyStrategies[strategy].detail}</strong></div><label>最大运行时间（秒）<TaskNumberInput value={duration} onCommit={setDuration} min={1} max={86_400} disabled={editingBlocked} /></label></>}
+        {(collectionMethod === 'manual' || strategy === 'episodic' || strategy === 'dagger_corrections') && <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={editingBlocked} /></label>}
+        {(collectionMethod === 'manual' || strategy === 'episodic') && <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={editingBlocked} /></label>}
+        {(collectionMethod === 'manual' || strategy === 'episodic') && <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={editingBlocked} /></label>}
         <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={editingBlocked}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label>
+        {collectionMethod === 'policy' && strategy === 'highlight' && <label>环形缓存（秒）<TaskNumberInput value={ringBufferSeconds} onCommit={setRingBufferSeconds} min={1} max={300} disabled={editingBlocked} /></label>}
       </div>
-      <div className="editor-actions">{editingId && <button className="outline" type="button" onClick={resetForm}>取消</button>}<button className="primary inline-icon" type="button" onClick={() => void saveTask()} disabled={editingBlocked || !name.trim() || (!editingId && !description.trim()) || !Number.isFinite(targetMinutes) || targetMinutes <= 0}><Plus size={15} />{editingId ? '保存修改' : '添加任务'}</button></div>
+      <div className="editor-actions">{editingId && <button className="outline" type="button" onClick={resetForm}>取消</button>}<button className="primary inline-icon" type="button" onClick={() => void saveTask()} disabled={editingBlocked || !name.trim() || !description.trim() || (collectionMethod === 'policy' && !policyPath) || !Number.isFinite(targetMinutes) || targetMinutes <= 0}><Plus size={15} />{editingId ? '保存修改' : '添加任务'}</button></div>
     </section>}</>}
   </section>;
 }

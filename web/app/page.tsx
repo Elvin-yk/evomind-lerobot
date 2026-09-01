@@ -80,7 +80,10 @@ type WorkspaceInventory = { datasets: LocalDataset[]; policies: LocalPolicy[] };
 type DailyCollectionTask = {
   id: string; name: string; description: string; target_duration_s: number;
   num_episodes: number; episode_time_s: number; reset_time_s: number; fps: number;
-  actual_duration_s: number; completed: boolean;
+  collection_method: 'manual' | 'policy'; policy_path: string;
+  rollout_strategy: Exclude<RolloutStrategy, 'base'>; inference: RolloutInference;
+  duration_s: number; ring_buffer_seconds: number;
+  actual_duration_s: number; episode_count: number; completed: boolean;
 };
 type RolloutStrategy = 'base' | 'episodic' | 'sentry' | 'highlight' | 'dagger_corrections' | 'dagger_continuous';
 type RolloutInference = 'sync' | 'rtc';
@@ -105,10 +108,10 @@ const menu: { id: PageId; label: string }[] = [
   { id: 'maintenance', label: '维修' },
   { id: 'calibration', label: '校准' },
   { id: 'teleoperation', label: '遥操作' },
+  { id: 'inference', label: '推理' },
   { id: 'recording', label: '数据采集' },
   { id: 'collection-progress', label: '采集进度' },
   { id: 'datasets', label: '数据管理' },
-  { id: 'inference', label: '推理 / Policy 采集' },
 ];
 
 function serialIdentity(stableId: string) {
@@ -493,7 +496,7 @@ export default function Home() {
       {activePage === 'calibration' && saved && <CalibrationPrototype configuration={saved} onConfigurationChange={setSaved} />}
       {activePage === 'teleoperation' && saved && <WorkflowPage kind="teleoperation" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
       {activePage === 'recording' && saved && <WorkflowPage kind="recording" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
-      {activePage === 'collection-progress' && saved && <CollectionProgressPage runtimeEvent={runtimeEvent} />}
+      {activePage === 'collection-progress' && saved && <CollectionProgressPage runtimeEvent={runtimeEvent} policies={workspace.policies} />}
       {activePage === 'datasets' && saved && <DatasetViewerPage runtimeEvent={runtimeEvent} robotType={saved.robot_type} statusSlot={workflowStatusSlot} />}
       {activePage === 'inference' && saved && <WorkflowPage kind="inference" configuration={saved} workspace={workspace} runtimeEvent={runtimeEvent} storage={status?.runtime ?? null} statusSlot={workflowStatusSlot} onWorkspaceRefresh={refreshWorkspace} />}
     </main>
@@ -1022,25 +1025,13 @@ function SerialCalibrationPrototype({ configuration, onConfigurationChange }: { 
 
 function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, statusSlot, onWorkspaceRefresh }: { kind: 'teleoperation' | 'recording' | 'inference' | 'replay'; configuration: DeviceConfiguration; workspace: WorkspaceInventory; runtimeEvent: RuntimeEvent | null; storage: StorageInfo | null; statusSlot: HTMLDivElement | null; onWorkspaceRefresh: () => void }) {
   const followers = [...configuration.serial_bindings, ...configuration.can_bindings].filter((binding) => binding.kind === 'robot');
-  const content = {
-    teleoperation: { title: '遥操作', operation: 'teleoperation', endpoint: '/api/runtime/teleoperation/start', button: '开始遥操作', note: '' },
-    recording: { title: '数据采集', operation: 'recording', endpoint: '/api/runtime/recording/start', button: '开始采集', note: '' },
-    inference: { title: '推理 / Policy 采集', operation: 'rollout', endpoint: '/api/runtime/rollout/start', button: '开始 Rollout', note: 'Policy 将控制机械臂；DAgger 模式可从网页切换为人工接管' },
-    replay: { title: '回放', operation: 'replay', endpoint: '/api/runtime/replay/start', button: '开始回放', note: '回放会直接驱动机械臂执行记录动作' },
-  }[kind];
   const [fps, setFps] = useState(30);
-  const [datasetName, setDatasetName] = useState('rollout_pi05_full_mix_562ep_test');
   const [task, setTask] = useState('Insert the copper screw into the black sleeve');
   const [taskId, setTaskId] = useState('');
   const [dailyTasks, setDailyTasks] = useState<DailyCollectionTask[]>([]);
-  const [episodes, setEpisodes] = useState(10);
-  const [episodeTime, setEpisodeTime] = useState(30);
-  const [resetTime, setResetTime] = useState(10);
   const [duration, setDuration] = useState(120);
-  const [strategy, setStrategy] = useState<RolloutStrategy>('base');
   const [inference, setInference] = useState<RolloutInference>('sync');
-  const [ringBufferSeconds, setRingBufferSeconds] = useState(10);
-  const [policyPath, setPolicyPath] = useState(workspace.policies[0]?.path ?? 'Elvinky/pi05_full_mix_562ep_sft_fp32');
+  const [policyPath, setPolicyPath] = useState(workspace.policies[0]?.path ?? '');
   const [policyInspection, setPolicyInspection] = useState<PolicyInspection | null>(null);
   const [policyInspecting, setPolicyInspecting] = useState(false);
   const [datasetId, setDatasetId] = useState(workspace.datasets[0]?.id ?? '');
@@ -1051,6 +1042,20 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   const pendingSequence = useRef(0);
   const wasRunning = useRef(false);
 
+  const refreshTasks = useCallback(() => {
+    if (kind !== 'recording') return Promise.resolve();
+    return Promise.all([
+      readJson<DailyCollectionTask[]>('/api/collection/tasks'),
+      readJson<{ active_session: { task_id: string } | null }>('/api/collection/progress'),
+    ])
+      .then(([tasks, progress]) => {
+        setDailyTasks(tasks);
+        setTaskId((current) => progress.active_session?.task_id
+          ?? (tasks.some((item) => item.id === current) ? current : tasks[0]?.id ?? ''));
+      })
+      .catch(() => setDailyTasks([]));
+  }, [kind]);
+
   useEffect(() => {
     const refresh = () => readJson<WorkflowRuntime>('/api/runtime/status').then(setRuntime).catch(() => undefined);
     void refresh();
@@ -1058,12 +1063,7 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (kind !== 'recording') return;
-    readJson<DailyCollectionTask[]>('/api/collection/tasks')
-      .then((tasks) => { setDailyTasks(tasks); setTaskId((current) => current || tasks[0]?.id || ''); })
-      .catch(() => setDailyTasks([]));
-  }, [kind]);
+  useEffect(() => { void refreshTasks(); }, [refreshTasks]);
 
   useEffect(() => {
     let timer: number | undefined;
@@ -1075,22 +1075,33 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   }, [kind]);
 
   useEffect(() => {
-    if (wasRunning.current && !runtime.running) onWorkspaceRefresh();
+    if (wasRunning.current && !runtime.running) { onWorkspaceRefresh(); void refreshTasks(); }
     wasRunning.current = runtime.running;
-  }, [onWorkspaceRefresh, runtime.running]);
+  }, [onWorkspaceRefresh, refreshTasks, runtime.running]);
 
-  const effectivePolicyPath = policyPath || workspace.policies[0]?.path || 'Elvinky/pi05_full_mix_562ep_sft_fp32';
+  const selectedTask = dailyTasks.find((item) => item.id === taskId);
+  const selectedStrategy = selectedTask?.collection_method === 'policy' ? selectedTask.rollout_strategy : null;
+  const operation = kind === 'recording'
+    ? runtime.running && (runtime.operation === 'recording' || runtime.operation === 'rollout')
+      ? runtime.operation
+      : selectedTask?.collection_method === 'policy' ? 'rollout' : 'recording'
+    : kind === 'inference' ? 'rollout' : kind;
+  const endpoint = kind === 'recording'
+    ? '/api/runtime/collection/start'
+    : kind === 'inference' ? '/api/runtime/rollout/start' : `/api/runtime/${kind}/start`;
+  const effectivePolicyPath = kind === 'recording' ? selectedTask?.policy_path ?? '' : policyPath || workspace.policies[0]?.path || '';
   const effectiveDatasetId = datasetId || workspace.datasets[0]?.id || '';
   const selectedDataset = workspace.datasets.find((item) => item.id === effectiveDatasetId);
   const selectedPolicy = workspace.policies.find((item) => item.path === effectivePolicyPath);
-  const selectedTask = dailyTasks.find((item) => item.id === taskId);
-  const runningThis = runtime.running && runtime.operation === content.operation;
+  const runningThis = runtime.running && runtime.operation === operation;
   const runningOther = runtime.running && !runningThis;
   const event = newestRuntimeEvent(
-    runtimeEvent?.operation === content.operation ? runtimeEvent : null,
-    runtime.event?.operation === content.operation ? runtime.event : null,
+    runtimeEvent?.operation === operation ? runtimeEvent : null,
+    runtime.event?.operation === operation ? runtime.event : null,
   );
   const visibleError = operationError || (event?.phase === 'failed' ? event.message : '');
+  const rolloutPhase = typeof event?.data.rollout_phase === 'string' ? event.data.rollout_phase : 'autonomous';
+  const recordingPhase = event?.phase;
 
   useEffect(() => {
     if (pendingCommand && event && event.sequence > pendingSequence.current) setPendingCommand(null);
@@ -1103,103 +1114,67 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
 
   async function start() {
     setOperationError('');
-    if (kind === 'inference' && !window.confirm('Rollout 会让 Policy 直接驱动机械臂。请确认急停可用、周围空间已清空，并让操作员随时准备接管。')) return;
+    if ((kind === 'inference' || selectedTask?.collection_method === 'policy') && !window.confirm('Policy 会直接驱动机械臂。请确认急停可用、周围空间已清空，并让操作员随时准备接管。')) return;
     let body: Record<string, unknown> = { fps };
     if (kind === 'recording') body = { task_id: taskId };
-    if (kind === 'inference') body = { policy_path: effectivePolicyPath, strategy, inference, task, dataset_name: datasetName, fps, duration_s: duration, num_episodes: episodes, episode_time_s: episodeTime, reset_time_s: resetTime, ring_buffer_seconds: ringBufferSeconds };
+    if (kind === 'inference') body = { policy_path: effectivePolicyPath, strategy: 'base', inference, task, fps, duration_s: duration };
     if (kind === 'replay') body = { dataset_id: effectiveDatasetId, episode };
-    try { setRuntime(await postJson<WorkflowRuntime>(content.endpoint, body)); }
+    try { setRuntime(await postJson<WorkflowRuntime>(endpoint, body)); }
     catch (startError) { setOperationError(startError instanceof Error ? startError.message : '启动失败'); }
   }
 
   async function inspectPolicy() {
-    setOperationError('');
-    setPolicyInspecting(true);
+    setOperationError(''); setPolicyInspecting(true);
     try { setPolicyInspection(await postJson<PolicyInspection>('/api/runtime/policy/inspect', { policy_path: effectivePolicyPath })); }
     catch (inspectError) { setPolicyInspection(null); setOperationError(inspectError instanceof Error ? inspectError.message : '模型检查失败'); }
     finally { setPolicyInspecting(false); }
   }
 
   async function command(value: 'stop' | 'finish_episode' | 'rerecord_episode' | 'pause_resume' | 'correction' | 'toggle_highlight') {
-    pendingSequence.current = event?.sequence ?? 0;
-    setPendingCommand(value);
+    pendingSequence.current = event?.sequence ?? 0; setPendingCommand(value);
     try { setRuntime(await postJson<WorkflowRuntime>('/api/runtime/command', { command: value })); }
-    catch (commandError) {
-      setPendingCommand(null);
-      setOperationError(commandError instanceof Error ? commandError.message : '操作失败');
-    }
+    catch (commandError) { setPendingCommand(null); setOperationError(commandError instanceof Error ? commandError.message : '操作失败'); }
   }
 
   const canStart = kind === 'teleoperation'
-    || (kind === 'recording' && Boolean(taskId))
-    || (kind === 'inference' && Boolean(effectivePolicyPath && task.trim() && (strategy === 'base' || datasetName.trim())))
+    || (kind === 'recording' && Boolean(selectedTask))
+    || (kind === 'inference' && Boolean(effectivePolicyPath && task.trim()))
     || (kind === 'replay' && Boolean(selectedDataset));
-
-  const compactWorkflow = kind === 'teleoperation' || kind === 'recording';
-  const recordingPhase = event?.phase;
   const canControlEpisode = runningThis && recordingPhase === 'running' && !pendingCommand;
   const canSkipReset = runningThis && recordingPhase === 'resetting' && !pendingCommand;
-  const rolloutPhase = typeof event?.data.rollout_phase === 'string' ? event.data.rollout_phase : 'autonomous';
+  const storageRefreshKey = runtimeEvent?.data.stage === 'episode_saved' ? runtimeEvent.sequence : null;
 
-  return <section className={`workflow-page${compactWorkflow ? ' compact-workflow' : ''}${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}${kind === 'recording' ? ' recording-workflow' : ''}`}>
-    {statusSlot && createPortal(<WorkflowSummary kind={kind} dataset={selectedDataset} policy={selectedPolicy} policyPath={kind === 'inference' ? effectivePolicyPath : ''} event={event} error={visibleError} />, statusSlot)}
+  return <section className={`workflow-page${kind === 'teleoperation' || kind === 'recording' ? ' compact-workflow' : ''}${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}${kind === 'recording' ? ' recording-workflow' : ''}`}>
+    {statusSlot && createPortal(<WorkflowSummary kind={kind} dataset={selectedDataset} policy={selectedPolicy} policyPath={effectivePolicyPath} event={event} error={visibleError} />, statusSlot)}
     <div className="workflow-grid"><div className="workflow-primary">
       {kind === 'teleoperation' && <WorkflowSection title="控制设置"><div className="form-grid"><label className="full-field">控制频率<select value={fps} onChange={(item) => updateFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label></div></WorkflowSection>}
-      {kind === 'recording' && <><StorageNotice initial={storage} refreshKey={runtimeEvent?.operation === 'recording' && runtimeEvent.data.stage === 'episode_saved' ? runtimeEvent.sequence : null} /><WorkflowSection title="数据集"><div className="form-grid"><label className="full-field">今日任务<select value={taskId} onChange={(item) => setTaskId(item.target.value)} disabled={runningThis}>{dailyTasks.length === 0 && <option value="">请先在采集进度中创建今日任务</option>}{dailyTasks.map((item) => <option value={item.id} key={item.id}>{item.name}{item.completed ? ' · 已完成' : ''}</option>)}</select></label>{selectedTask && <div className="selected-task-description"><span>任务描述</span><strong>{selectedTask.description}</strong><small>目标 {Math.round(selectedTask.target_duration_s / 60)} 分钟 · 已完成 {Math.round(selectedTask.actual_duration_s / 60)} 分钟</small></div>}</div></WorkflowSection></>}
-      {kind === 'inference' && <>
-        <WorkflowSection title="Policy 与模式">
-          <div className="form-grid">
-            <label className="full-field">Policy
-              <input list="local-policies" value={effectivePolicyPath} onChange={(item) => { setPolicyPath(item.target.value); setPolicyInspection(null); }} disabled={runningThis} placeholder="本地路径、Hugging Face repo id 或链接" />
-              <datalist id="local-policies">{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id}</option>)}</datalist>
-            </label>
-            <label>Rollout 模式
-              <select value={strategy} onChange={(item) => setStrategy(item.target.value as RolloutStrategy)} disabled={runningThis}>
-                {(Object.entries(rolloutModes) as Array<[RolloutStrategy, { label: string; detail: string }]>).map(([value, mode]) => <option value={value} key={value}>{mode.label}</option>)}
-              </select>
-            </label>
-            <label>推理后端
-              <select value={inference} onChange={(item) => setInference(item.target.value as RolloutInference)} disabled={runningThis}>
-                <option value="sync">同步推理</option>
-                <option value="rtc">RTC 实时分块</option>
-              </select>
-            </label>
-            <div className="selected-task-description full-field"><span>{rolloutModes[strategy].label}</span><strong>{rolloutModes[strategy].detail}</strong></div>
-            <label>最大运行时间<input type="number" value={duration} onChange={(item) => setDuration(Number(item.target.value))} disabled={runningThis} min="1" /></label>
-            <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label>
-            <label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="使用训练数据中的任务描述效果最稳定" /></label>
-            {strategy !== 'base' && <label className="full-field">结果数据集<input value={datasetName} onChange={(item) => setDatasetName(item.target.value)} disabled={runningThis} /></label>}
-          </div>
-          <div className="workflow-actions"><span>检查只读取配置，不加载权重，也不会连接或移动机械臂。</span><button className="outline" type="button" disabled={runningThis || policyInspecting || !effectivePolicyPath} onClick={() => void inspectPolicy()}>{policyInspecting ? '正在检查' : '检查模型兼容性'}</button></div>
-          {policyInspection && <div className={`calibration-progress ${policyInspection.compatible ? 'done' : 'error'}`}><div><span>{policyInspection.policy_type.toUpperCase()} · {policyInspection.revision?.slice(0, 10) ?? '本地模型'}</span><strong>{policyInspection.compatible ? '模型与当前设备兼容' : '模型与当前设备不兼容'}</strong><small>状态/动作 {policyInspection.state_dim ?? '—'} / {policyInspection.action_dim ?? '—'} 维 · 摄像头 {policyInspection.expected_visuals.length} 路{Object.keys(policyInspection.rename_map).length > 0 ? ` · 自动映射 ${Object.entries(policyInspection.rename_map).map(([from, to]) => `${from.split('.').pop()} → ${to.split('.').pop()}`).join(', ')}` : ''}</small>{policyInspection.issues.map((issue) => <small key={issue}>{issue}</small>)}</div></div>}
-        </WorkflowSection>
-        {(strategy === 'episodic' || strategy === 'dagger_corrections') && <WorkflowSection title={strategy === 'episodic' ? 'Episode' : '人工纠正'}><div className="form-grid"><label>{strategy === 'episodic' ? '采集轮数' : '纠正片段数'}<input type="number" value={episodes} onChange={(item) => setEpisodes(Number(item.target.value))} disabled={runningThis} min="1" /></label>{strategy === 'episodic' && <><label>单轮时长<input type="number" value={episodeTime} onChange={(item) => setEpisodeTime(Number(item.target.value))} disabled={runningThis} min="1" /></label><label>重置时间<input type="number" value={resetTime} onChange={(item) => setResetTime(Number(item.target.value))} disabled={runningThis} min="0" /></label></>}</div></WorkflowSection>}
-        {strategy === 'highlight' && <WorkflowSection title="片段缓存"><div className="form-grid"><label className="full-field">向前保留时间<input type="number" value={ringBufferSeconds} onChange={(item) => setRingBufferSeconds(Number(item.target.value))} disabled={runningThis} min="1" max="300" /></label></div></WorkflowSection>}
-      </>}
+      {kind === 'recording' && <><StorageNotice initial={storage} refreshKey={storageRefreshKey} /><WorkflowSection title="今日采集任务"><div className="form-grid">
+        <label className="full-field">任务<select value={taskId} onChange={(item) => { setTaskId(item.target.value); setPolicyInspection(null); }} disabled={runningThis}>{dailyTasks.length === 0 && <option value="">请先在采集进度中创建今日任务</option>}{dailyTasks.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.collection_method === 'policy' ? 'Policy 采集' : '人工采集'}{item.completed ? ' · 已完成' : ''}</option>)}</select></label>
+        {selectedTask && <div className="selected-task-description full-field"><span>{selectedTask.collection_method === 'policy' ? 'Policy 采集' : '人工采集'} · 参数由采集进度任务锁定</span><strong>{selectedTask.description}</strong><small>目标 {Math.round(selectedTask.target_duration_s / 60)} 分钟 · 有效 {Math.round(selectedTask.actual_duration_s / 60)} 分钟 · 已保存 {selectedTask.episode_count} Episodes</small></div>}
+        {selectedTask?.collection_method === 'policy' && <><label>采集策略<input value={rolloutModes[selectedTask.rollout_strategy].label} readOnly /></label><label>推理后端<input value={selectedTask.inference === 'rtc' ? 'RTC 实时分块' : '同步推理'} readOnly /></label><label className="full-field">本地 Policy<input value={selectedPolicy?.id ?? selectedTask.policy_path} readOnly /></label><label>最大运行时间<input value={`${selectedTask.duration_s} 秒`} readOnly /></label><label>帧率<input value={`${selectedTask.fps} FPS`} readOnly /></label></>}
+      </div>{selectedTask?.collection_method === 'policy' && <div className="workflow-actions"><span>启动时会再次检查本地模型、摄像头映射和状态/动作维度。</span><button className="outline" type="button" disabled={runningThis || policyInspecting} onClick={() => void inspectPolicy()}>{policyInspecting ? '正在检查' : '检查模型兼容性'}</button></div>}{policyInspection && <PolicyInspectionResult inspection={policyInspection} />}</WorkflowSection></>}
+      {kind === 'inference' && <WorkflowSection title="本地 Policy 试跑"><div className="form-grid">
+        <label className="full-field">Policy<select value={effectivePolicyPath} onChange={(item) => { setPolicyPath(item.target.value); setPolicyInspection(null); }} disabled={runningThis}>{workspace.policies.length === 0 && <option value="">本机未发现模型</option>}{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id} · {policy.type}</option>)}</select></label>
+        <label>推理后端<select value={inference} onChange={(item) => setInference(item.target.value as RolloutInference)} disabled={runningThis}><option value="sync">同步推理</option><option value="rtc">RTC 实时分块</option></select></label>
+        <label>最大运行时间<input type="number" value={duration} onChange={(item) => setDuration(Number(item.target.value))} disabled={runningThis} min="1" /></label>
+        <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label>
+        <label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="使用训练数据中的任务描述效果最稳定" /></label>
+        <div className="selected-task-description full-field"><span>纯推理</span><strong>不创建 Dataset，也不计入采集进度</strong></div>
+      </div><div className="workflow-actions"><span>检查只读取配置，不加载权重，也不会连接或移动机械臂。</span><button className="outline" type="button" disabled={runningThis || policyInspecting || !effectivePolicyPath} onClick={() => void inspectPolicy()}>{policyInspecting ? '正在检查' : '检查模型兼容性'}</button></div>{policyInspection && <PolicyInspectionResult inspection={policyInspection} />}</WorkflowSection>}
       {kind === 'replay' && <><WorkflowSection title="回放来源"><div className="form-grid"><label className="full-field">数据集<select value={effectiveDatasetId} onChange={(item) => { setDatasetId(item.target.value); setEpisode(0); }} disabled={runningThis}>{workspace.datasets.length === 0 && <option value="">没有本地数据集</option>}{workspace.datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.id}</option>)}</select></label><label>Episode<input type="number" value={episode} onChange={(item) => setEpisode(Number(item.target.value))} disabled={runningThis} min="0" max={Math.max(0, (selectedDataset?.episodes ?? 1) - 1)} /></label></div></WorkflowSection><WorkflowSection title="执行设备">{followers.map((follower) => <div className="workflow-device" key={follower.id}><div><strong>{bindingTitle(follower.alias)}</strong><span>{serialIdentity(follower.id)}</span></div><i>已连接</i></div>)}</WorkflowSection></>}
-      <div className="workflow-actions">
-        {content.note && <span>{content.note}</span>}
-        <div className={`workflow-command-buttons${runningThis && (kind === 'recording' || (kind === 'inference' && strategy === 'episodic')) ? ' episode-controls' : ''}`}>
-          {runningThis && kind === 'recording' && <>
-            <button className="primary" type="button" disabled={!canControlEpisode} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' && recordingPhase !== 'resetting' ? '正在保存' : '保存这一段'}</button>
-            <button className="outline" type="button" disabled={!canControlEpisode} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录这一段'}</button>
-            {recordingPhase === 'resetting' && <button className="outline" type="button" disabled={!canSkipReset} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在跳过' : '跳过等待'}</button>}
-          </>}
-          {runningThis && kind === 'inference' && strategy === 'episodic' && <>
-            <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在切换' : rolloutPhase === 'resetting' ? '跳过重置' : '结束本轮'}</button>
-            {rolloutPhase !== 'resetting' && <button className="outline" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录本轮'}</button>}
-          </>}
-          {runningThis && kind === 'inference' && (strategy === 'dagger_corrections' || strategy === 'dagger_continuous') && <>
-            {rolloutPhase === 'autonomous' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('pause_resume')}>暂停并接管</button>}
-            {rolloutPhase === 'paused' && <><button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('correction')}>开始人工纠正</button><button className="outline" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('pause_resume')}>恢复自主</button></>}
-            {rolloutPhase === 'correcting' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('correction')}>结束纠正并保存</button>}
-          </>}
-          {runningThis && kind === 'inference' && strategy === 'highlight' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('toggle_highlight')}>{rolloutPhase === 'recording' ? '结束片段并保存' : '开始保存片段'}</button>}
-          <button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || Boolean(pendingCommand) || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? pendingCommand === 'stop' ? '正在结束' : kind === 'recording' ? '结束采集' : '停止' : content.button}</button>
-        </div>
-      </div>
+      <div className="workflow-actions"><span>{kind === 'inference' ? '纯推理不会写入 Dataset' : kind === 'replay' ? '回放会直接驱动机械臂执行记录动作' : ''}</span><div className={`workflow-command-buttons${runningThis && kind === 'recording' ? ' episode-controls' : ''}`}>
+        {runningThis && kind === 'recording' && selectedTask?.collection_method === 'manual' && <><button className="primary" type="button" disabled={!canControlEpisode} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' && recordingPhase !== 'resetting' ? '正在保存' : '保存这一段'}</button><button className="outline" type="button" disabled={!canControlEpisode} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录这一段'}</button>{recordingPhase === 'resetting' && <button className="outline" type="button" disabled={!canSkipReset} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在跳过' : '跳过等待'}</button>}</>}
+        {runningThis && kind === 'recording' && selectedStrategy === 'episodic' && <><button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在切换' : rolloutPhase === 'resetting' ? '跳过重置' : '结束本轮'}</button>{rolloutPhase !== 'resetting' && <button className="outline" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录本轮'}</button>}</>}
+        {runningThis && kind === 'recording' && (selectedStrategy === 'dagger_corrections' || selectedStrategy === 'dagger_continuous') && <>{rolloutPhase === 'autonomous' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('pause_resume')}>暂停并接管</button>}{rolloutPhase === 'paused' && <><button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('correction')}>开始人工纠正</button><button className="outline" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('pause_resume')}>恢复自主</button></>}{rolloutPhase === 'correcting' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('correction')}>结束纠正并保存</button>}</>}
+        {runningThis && kind === 'recording' && selectedStrategy === 'highlight' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('toggle_highlight')}>{rolloutPhase === 'recording' ? '结束片段并保存' : '开始保存片段'}</button>}
+        <button className={runningThis ? 'danger' : 'primary'} type="button" disabled={runningOther || Boolean(pendingCommand) || (!runningThis && !canStart)} onClick={() => runningThis ? void command('stop') : void start()}>{runningThis ? pendingCommand === 'stop' ? '正在结束' : kind === 'recording' ? '结束采集' : '停止' : kind === 'teleoperation' ? '开始遥操作' : kind === 'recording' ? '开始采集' : kind === 'inference' ? '开始推理' : '开始回放'}</button>
+      </div></div>
     </div></div>
   </section>;
+}
+
+function PolicyInspectionResult({ inspection }: { inspection: PolicyInspection }) {
+  return <div className={`calibration-progress ${inspection.compatible ? 'done' : 'error'}`}><div><span>{inspection.policy_type.toUpperCase()} · {inspection.revision?.slice(0, 10) ?? '本地模型'}</span><strong>{inspection.compatible ? '模型与当前设备兼容' : '模型与当前设备不兼容'}</strong><small>状态/动作 {inspection.state_dim ?? '—'} / {inspection.action_dim ?? '—'} 维 · 摄像头 {inspection.expected_visuals.length} 路{Object.keys(inspection.rename_map).length > 0 ? ` · 自动映射 ${Object.entries(inspection.rename_map).map(([from, to]) => `${from.split('.').pop()} → ${to.split('.').pop()}`).join(', ')}` : ''}</small>{inspection.issues.map((issue) => <small key={issue}>{issue}</small>)}</div></div>;
 }
 
 function WorkflowSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -1213,7 +1188,7 @@ function WorkflowSummary({ kind, dataset, policy, policyPath, event, error }: { 
   const errorDetails = error ? <details className="workflow-error-details"><summary>错误详情</summary><pre>{error}</pre></details> : null;
   if (kind === 'teleoperation') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={event?.data.fps ? `${Number(event.data.fps).toFixed(1)} FPS` : phaseDetail} />{errorDetails}</div>;
   if (kind === 'recording') return <div className="workflow-summary"><SummaryItem label="采集状态" value={state} detail={event?.data.saved_episodes !== undefined ? `已保存 ${String(event.data.saved_episodes)} Episodes` : phaseDetail} />{errorDetails}</div>;
-  if (kind === 'inference') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={typeof event?.data.rollout_phase === 'string' ? String(event.data.rollout_phase) : phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? (policyPath.split('/').slice(-2).join('/') || '未选择')} detail={policy ? `${policy.type} · 本地 checkpoint` : 'Hugging Face / 本地路径'} />{errorDetails}</div>;
+  if (kind === 'inference') return <div className="workflow-summary"><SummaryItem label="运行状态" value={state} detail={typeof event?.data.rollout_phase === 'string' ? String(event.data.rollout_phase) : phaseDetail} /><SummaryItem label="模型" value={policy?.id ?? (policyPath.split('/').slice(-2).join('/') || '未选择')} detail={policy ? `${policy.type} · 本地 checkpoint` : '本机未选择模型'} />{errorDetails}</div>;
   return <div className="workflow-summary"><SummaryItem label="回放状态" value={state} detail={event?.data.frame !== undefined ? `${String(event.data.frame)} / ${String(event.data.total_frames ?? '—')} 帧` : phaseDetail} /><SummaryItem label={dataset ? dataset.id : '数据集'} value={dataset ? `${dataset.frames} 帧` : '未选择'} detail={dataset ? `${dataset.episodes} Episodes · ${dataset.fps || '—'} FPS` : '未发现本地数据集'} />{errorDetails}</div>;
 }
 

@@ -79,6 +79,12 @@ class CollectionStore:
                 "episode_time_s": "INTEGER NOT NULL DEFAULT 30",
                 "reset_time_s": "INTEGER NOT NULL DEFAULT 10",
                 "fps": "INTEGER NOT NULL DEFAULT 30",
+                "collection_method": "TEXT NOT NULL DEFAULT 'manual'",
+                "policy_path": "TEXT NOT NULL DEFAULT ''",
+                "rollout_strategy": "TEXT NOT NULL DEFAULT 'episodic'",
+                "inference": "TEXT NOT NULL DEFAULT 'sync'",
+                "duration_s": "INTEGER NOT NULL DEFAULT 120",
+                "ring_buffer_seconds": "INTEGER NOT NULL DEFAULT 10",
             }
             for column, definition in task_setting_columns.items():
                 if column not in task_columns:
@@ -101,6 +107,19 @@ class CollectionStore:
                 )
                 """
             )
+            session_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(collection_sessions)")
+            }
+            session_setting_columns = {
+                "collection_method": "TEXT NOT NULL DEFAULT 'manual'",
+                "rollout_strategy": "TEXT",
+                "policy_path": "TEXT",
+            }
+            for column, definition in session_setting_columns.items():
+                if column not in session_columns:
+                    connection.execute(
+                        f"ALTER TABLE collection_sessions ADD COLUMN {column} {definition}"
+                    )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS collection_episodes (
@@ -147,6 +166,12 @@ class CollectionStore:
             "episode_time_s": int(values["episode_time_s"]),
             "reset_time_s": int(values["reset_time_s"]),
             "fps": int(values["fps"]),
+            "collection_method": str(values["collection_method"]),
+            "policy_path": str(values["policy_path"]),
+            "rollout_strategy": str(values["rollout_strategy"]),
+            "inference": str(values["inference"]),
+            "duration_s": int(values["duration_s"]),
+            "ring_buffer_seconds": int(values["ring_buffer_seconds"]),
             "actual_duration_s": duration,
             "episode_count": episodes,
             "session_count": sessions,
@@ -169,6 +194,12 @@ class CollectionStore:
         episode_time_s: int,
         reset_time_s: int,
         fps: int,
+        collection_method: str = "manual",
+        policy_path: str = "",
+        rollout_strategy: str = "episodic",
+        inference: str = "sync",
+        duration_s: int = 120,
+        ring_buffer_seconds: int = 10,
     ) -> dict[str, Any]:
         task_id = str(uuid.uuid4())
         now = _utc_now()
@@ -178,8 +209,10 @@ class CollectionStore:
                     """
                     INSERT INTO daily_tasks
                         (id, work_date, name, description, target_duration_s, num_episodes,
-                         episode_time_s, reset_time_s, fps, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         episode_time_s, reset_time_s, fps, collection_method, policy_path,
+                         rollout_strategy, inference, duration_s, ring_buffer_seconds,
+                         created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -191,6 +224,12 @@ class CollectionStore:
                         episode_time_s,
                         reset_time_s,
                         fps,
+                        collection_method,
+                        policy_path,
+                        rollout_strategy,
+                        inference,
+                        duration_s,
+                        ring_buffer_seconds,
                         now,
                         now,
                     ),
@@ -253,22 +292,33 @@ class CollectionStore:
         task_id: str,
         *,
         name: str,
+        description: str,
         target_duration_s: float,
         num_episodes: int,
         episode_time_s: int,
         reset_time_s: int,
         fps: int,
+        collection_method: str,
+        policy_path: str,
+        rollout_strategy: str,
+        inference: str,
+        duration_s: int,
+        ring_buffer_seconds: int,
     ) -> dict[str, Any]:
         current = self.get_task(task_id)
         if current["collecting"]:
             raise CollectionTaskConflictError("任务正在采集，不能修改")
+        if current["locked"] and collection_method != current["collection_method"]:
+            raise CollectionTaskConflictError("已有采集记录后不能修改采集方式")
         try:
             with self._connect() as connection:
                 updated = connection.execute(
                     """
                     UPDATE daily_tasks
-                    SET name = ?, target_duration_s = ?, num_episodes = ?, episode_time_s = ?,
-                        reset_time_s = ?, fps = ?, updated_at = ?
+                    SET name = ?, description = ?, target_duration_s = ?, num_episodes = ?, episode_time_s = ?,
+                        reset_time_s = ?, fps = ?, collection_method = ?, policy_path = ?,
+                        rollout_strategy = ?, inference = ?, duration_s = ?,
+                        ring_buffer_seconds = ?, updated_at = ?
                     WHERE id = ?
                       AND NOT EXISTS (
                           SELECT 1 FROM collection_sessions
@@ -277,11 +327,18 @@ class CollectionStore:
                     """,
                     (
                         name.strip(),
+                        description.strip(),
                         target_duration_s,
                         num_episodes,
                         episode_time_s,
                         reset_time_s,
                         fps,
+                        collection_method,
+                        policy_path,
+                        rollout_strategy,
+                        inference,
+                        duration_s,
+                        ring_buffer_seconds,
                         _utc_now(),
                         task_id,
                         task_id,
@@ -301,14 +358,15 @@ class CollectionStore:
             connection.execute("DELETE FROM daily_tasks WHERE id = ?", (task_id,))
 
     def start_session(self, session_id: str, task_id: str, dataset_name: str, request: Any) -> None:
-        self.require_today_task(task_id)
+        task = self.require_today_task(task_id)
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO collection_sessions
                     (id, task_id, dataset_name, fps, num_episodes, episode_time_s,
-                     reset_time_s, status, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
+                     reset_time_s, collection_method, rollout_strategy, policy_path,
+                     status, started_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)
                 """,
                 (
                     session_id,
@@ -318,6 +376,9 @@ class CollectionStore:
                     request.num_episodes,
                     request.episode_time_s,
                     request.reset_time_s,
+                    task["collection_method"],
+                    task["rollout_strategy"] if task["collection_method"] == "policy" else None,
+                    task["policy_path"] if task["collection_method"] == "policy" else None,
                     _utc_now(),
                 ),
             )
