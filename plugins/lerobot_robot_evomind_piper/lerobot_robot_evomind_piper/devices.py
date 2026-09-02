@@ -400,6 +400,14 @@ class PiperXLeader(Teleoperator):
                 self._set_gripper_enabled(True)
         self._manual_control_enabled = enabled
 
+    def enable_torque(self) -> None:
+        """Put the leader in command mode so rollout can align it to the follower."""
+        self.set_manual_control(False)
+
+    def disable_torque(self) -> None:
+        """Return the leader to backdrivable manual-control mode."""
+        self.set_manual_control(True)
+
     def configure(self) -> None:
         self.set_manual_control(self.config.manual_control)
 
@@ -766,7 +774,10 @@ class BiPiperXLeader(Teleoperator):
 
     @cached_property
     def feedback_features(self) -> dict[str, type]:
-        return {}
+        return {
+            **{f"left_{key}": value for key, value in self.left_arm.feedback_features.items()},
+            **{f"right_{key}": value for key, value in self.right_arm.feedback_features.items()},
+        }
 
     @property
     def is_connected(self) -> bool:
@@ -797,6 +808,14 @@ class BiPiperXLeader(Teleoperator):
     def set_manual_control(self, enabled: bool) -> None:
         self.left_arm.set_manual_control(enabled)
         self.right_arm.set_manual_control(enabled)
+
+    def enable_torque(self) -> None:
+        """Put both leaders in command mode for smooth policy-to-human handover."""
+        self.set_manual_control(False)
+
+    def disable_torque(self) -> None:
+        """Return both leaders to backdrivable manual-control mode."""
+        self.set_manual_control(True)
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
