@@ -227,6 +227,15 @@ def _load_pretrained_policy(policy_config: PreTrainedConfig) -> PreTrainedPolicy
     )
 
 
+def _set_policy_rtc_config(policy: PreTrainedPolicy, rtc_config: object | None) -> None:
+    """Apply the selected backend to the actual policy, including resident policies."""
+    if not hasattr(policy.config, "rtc_config"):
+        return
+    policy.config.rtc_config = rtc_config
+    if hasattr(policy, "init_rtc_processor"):
+        policy.init_rtc_processor()
+
+
 def build_rollout_context(
     cfg: RolloutConfig,
     shutdown_event: Event,
@@ -263,9 +272,11 @@ def build_rollout_context(
                 "the policy must implement RTC semantics and predict_action_chunk must accept "
                 "inference_delay and prev_chunk_left_over. Use '--inference.type=sync' instead."
             )
-        policy.config.rtc_config = cfg.inference.rtc
-        if hasattr(policy, "init_rtc_processor"):
-            policy.init_rtc_processor()
+        _set_policy_rtc_config(policy, cfg.inference.rtc)
+    else:
+        # A resident policy may have been used by an earlier RTC rollout. Clear
+        # that runtime-only state before SyncInferenceEngine calls select_action.
+        _set_policy_rtc_config(policy, None)
 
     policy = policy.to(cfg.device)
     policy.eval()

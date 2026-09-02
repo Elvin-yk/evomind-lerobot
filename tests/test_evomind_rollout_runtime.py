@@ -1,5 +1,6 @@
 import queue
 import threading
+from types import SimpleNamespace
 
 from evomind_lerobot.device_config import (
     CameraBinding,
@@ -19,6 +20,7 @@ from evomind_lerobot.runtime_service import (
     _normalizer_feature_dim,
     _policy_path,
     _robot_payload,
+    _rollout_inference_config,
     _rollout_repo_id,
     _run_policy_resident,
 )
@@ -214,6 +216,21 @@ def test_rollout_request_exposes_all_web_modes() -> None:
     ):
         request = RolloutStartRequest(policy_path="model", strategy=strategy, task="task")
         assert request.strategy == strategy
+
+
+def test_web_rtc_uses_evostudio_continuity_settings() -> None:
+    config = _rollout_inference_config("rtc", SimpleNamespace(chunk_size=50))
+
+    assert config.rtc.execution_horizon == 20
+    assert config.rtc.max_guidance_weight == 5.0
+    assert config.queue_threshold == 30
+
+
+def test_web_rtc_continuity_settings_fit_short_chunks() -> None:
+    config = _rollout_inference_config("rtc", SimpleNamespace(chunk_size=12))
+
+    assert config.rtc.execution_horizon == 12
+    assert config.queue_threshold == 11
 
 
 def test_direct_rollout_resolves_policy_from_local_inventory(monkeypatch) -> None:

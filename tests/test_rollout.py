@@ -237,6 +237,26 @@ def test_load_pretrained_peft_policy_keeps_adapter_and_base_revisions_separate(m
     )
 
 
+def test_sync_backend_clears_rtc_state_from_resident_policy():
+    from lerobot.policies.rtc.configuration_rtc import RTCConfig
+    from lerobot.rollout.context import _set_policy_rtc_config
+
+    policy = SimpleNamespace(
+        config=SimpleNamespace(rtc_config=RTCConfig()),
+        rtc_processor=object(),
+    )
+
+    def init_rtc_processor():
+        policy.rtc_processor = policy.config.rtc_config
+
+    policy.init_rtc_processor = init_rtc_processor
+
+    _set_policy_rtc_config(policy, None)
+
+    assert policy.config.rtc_config is None
+    assert policy.rtc_processor is None
+
+
 # ---------------------------------------------------------------------------
 # RolloutRingBuffer
 # ---------------------------------------------------------------------------

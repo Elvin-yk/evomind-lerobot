@@ -562,7 +562,6 @@ def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = 
         RolloutConfig,
         SentryStrategyConfig,
     )
-    from lerobot.rollout.inference import RTCInferenceConfig, SyncInferenceConfig
     from lerobot.scripts.lerobot_rollout import rollout
 
     request = RolloutStartRequest.model_validate(payload)
@@ -611,7 +610,7 @@ def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = 
             record_autonomous=True,
         ),
     }[request.strategy]
-    inference = RTCInferenceConfig() if request.inference == "rtc" else SyncInferenceConfig()
+    inference = _rollout_inference_config(request.inference, policy)
     rollout_config = RolloutConfig(
         robot=robot,
         teleop=teleop if needs_teleop else None,
@@ -636,6 +635,26 @@ def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = 
         rollout(rollout_config)
     finally:
         rollout_context._load_pretrained_policy = original_loader
+
+
+def _rollout_inference_config(backend: Literal["sync", "rtc"], policy_config: Any) -> Any:
+    """Build the web rollout backend using Evo Studio's validated RTC continuity settings."""
+    from lerobot.policies.rtc.configuration_rtc import RTCConfig
+    from lerobot.rollout.inference import RTCInferenceConfig, SyncInferenceConfig
+
+    if backend == "sync":
+        return SyncInferenceConfig()
+
+    chunk_size = int(getattr(policy_config, "chunk_size", 20))
+    if chunk_size <= 0:
+        raise ValueError(f"Policy chunk_size must be positive, got {chunk_size}")
+    return RTCInferenceConfig(
+        rtc=RTCConfig(
+            execution_horizon=min(20, chunk_size),
+            max_guidance_weight=5.0,
+        ),
+        queue_threshold=min(30, chunk_size - 1),
+    )
 
 
 def _dataset(dataset_id: str) -> dict[str, Any]:
