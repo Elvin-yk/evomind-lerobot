@@ -2,7 +2,6 @@
 
 import { Pause, Play } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 
 const RobotTrajectory3DPanel = lazy(() => import('./robotTrajectory3D/RobotTrajectory3DPanel').then((module) => ({ default: module.RobotTrajectory3DPanel })));
 
@@ -58,7 +57,7 @@ function countLabel(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value);
 }
 
-export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { runtimeEvent: RuntimeEvent | null; robotType: string; statusSlot: HTMLDivElement | null }) {
+export function DatasetViewerPage({ runtimeEvent, robotType }: { runtimeEvent: RuntimeEvent | null; robotType: string; statusSlot: HTMLDivElement | null }) {
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [detail, setDetail] = useState<DatasetDetail | null>(null);
@@ -160,13 +159,7 @@ export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { run
     finally { setReplayPending(false); }
   }
 
-  const replayState = replayEvent?.message || '等待开始';
-  const replayDetail = replayEvent?.data.frame !== undefined
-    ? `${String(replayEvent.data.frame)} / ${String(replayEvent.data.total_frames ?? '—')} 帧`
-    : replayEvent ? `${replayEvent.phase} · ${new Date(replayEvent.timestamp).toLocaleTimeString()}` : '尚未启动';
-
   return <section className="dataset-page">
-    {statusSlot && createPortal(<div className="workflow-summary"><div><span>回放状态</span><strong>{replayState}</strong><p>{replayDetail}</p></div></div>, statusSlot)}
     <section className="dataset-filter-bar">
       <div className="dataset-filter-heading"><div><strong>筛选条件</strong><span>按数据集、任务和采集日期查找</span></div>{(query || taskFilter || dateFilter) && <button type="button" onClick={() => { setQuery(''); setTaskFilter(''); setDateFilter(''); }}>清除筛选</button>}</div>
       <div className="dataset-filter-fields">
