@@ -9,6 +9,7 @@ import re
 import signal
 import sqlite3
 import threading
+from pathlib import Path
 from queue import Empty
 from typing import Any, Literal
 
@@ -292,32 +293,52 @@ def _camera_rename_map(
     expected: set[str],
     provided: set[str],
 ) -> dict[str, str]:
-    """Resolve unambiguous camera aliases, primarily environment -> front."""
+    """Resolve unambiguous camera aliases from hardware slots to policy inputs."""
     missing = expected - provided
     extra = provided - expected
     if not missing or not extra:
         return {}
 
-    slot_by_feature = {
-        f"observation.images.{slot.alias}": slot
-        for slot in configuration.camera_slots
-        if slot.side == "single"
-    }
+    slot_by_feature = {f"observation.images.{slot.alias}": slot for slot in configuration.camera_slots}
     rename_map: dict[str, str] = {}
     for source in sorted(extra):
         slot = slot_by_feature.get(source)
         if slot is None:
             continue
-        candidates = [
-            target
-            for target in missing
-            if slot.kind == "environment"
-            and any(token in target.rsplit(".", 1)[-1] for token in ("front", "environment", "top"))
-        ]
+        candidates = []
+        for target in missing:
+            leaf = target.rsplit(".", 1)[-1].lower()
+            if slot.kind == "environment":
+                matches = any(token in leaf for token in ("base", "front", "environment", "top"))
+            else:
+                matches = "wrist" in leaf and slot.side in {"left", "right"} and slot.side in leaf
+            if matches:
+                candidates.append(target)
         if len(candidates) == 1:
             rename_map[source] = candidates[0]
             missing.remove(candidates[0])
     return rename_map
+
+
+def _normalizer_feature_dim(policy_path: str, feature_name: str) -> int | None:
+    """Read the checkpoint's effective (pre-padding) feature size from saved stats."""
+    path = Path(policy_path)
+    if not path.is_dir():
+        return None
+    try:
+        from safetensors import safe_open
+
+        for state_file in path.glob("policy_preprocessor_step_*_normalizer_processor.safetensors"):
+            with safe_open(state_file, framework="pt", device="cpu") as tensors:
+                tensor_keys = tensors.keys()
+                for statistic in ("q01", "mean", "min"):
+                    key = f"{feature_name}.{statistic}"
+                    if key in tensor_keys:
+                        shape = tensors.get_slice(key).get_shape()
+                        return int(shape[-1]) if shape else None
+    except (OSError, RuntimeError, ValueError):
+        logging.info("Could not inspect normalizer dimensions for %s", policy_path, exc_info=True)
+    return None
 
 
 def _teleoperator_payload(configuration: DeviceConfiguration) -> dict[str, Any] | None:
@@ -463,7 +484,8 @@ def inspect_policy_compatibility(request: PolicyInspectRequest) -> dict[str, Any
 
     state_feature = policy.input_features.get("observation.state")
     action_feature = policy.output_features.get("action")
-    state_dim = state_feature.shape[-1] if state_feature and state_feature.shape else None
+    padded_state_dim = state_feature.shape[-1] if state_feature and state_feature.shape else None
+    state_dim = _normalizer_feature_dim(path, "observation.state") or padded_state_dim
     action_dim = action_feature.shape[-1] if action_feature and action_feature.shape else None
     hardware_state_dim, hardware_action_dim = _configured_vector_dimensions(configuration)
 
@@ -495,6 +517,7 @@ def inspect_policy_compatibility(request: PolicyInspectRequest) -> dict[str, Any
         "revision": revision,
         "size_bytes": size_bytes,
         "state_dim": state_dim,
+        "padded_state_dim": padded_state_dim if padded_state_dim != state_dim else None,
         "action_dim": action_dim,
         "hardware_state_dim": hardware_state_dim,
         "hardware_action_dim": hardware_action_dim,

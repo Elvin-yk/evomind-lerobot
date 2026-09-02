@@ -10,6 +10,7 @@ from evomind_lerobot.runtime_service import (
     _camera_rename_map,
     _configured_vector_dimensions,
     _configured_visual_features,
+    _normalizer_feature_dim,
     _policy_path,
     _robot_payload,
     _rollout_repo_id,
@@ -120,6 +121,34 @@ def test_pi05_camera_mapping_and_vector_dimensions() -> None:
     assert _camera_rename_map(configuration, expected, provided) == {
         "observation.images.environment_1": "observation.images.right_front"
     }
+
+
+def test_pi05_openpi_camera_mapping() -> None:
+    configuration = _bi_so_configuration()
+    provided = _configured_visual_features(configuration)
+    expected = {
+        "observation.images.base_0_rgb",
+        "observation.images.left_wrist_0_rgb",
+        "observation.images.right_wrist_0_rgb",
+    }
+
+    assert _camera_rename_map(configuration, expected, provided) == {
+        "observation.images.environment_1": "observation.images.base_0_rgb",
+        "observation.images.left_wrist": "observation.images.left_wrist_0_rgb",
+        "observation.images.right_wrist": "observation.images.right_wrist_0_rgb",
+    }
+
+
+def test_normalizer_feature_dim_reads_effective_unpadded_size(tmp_path) -> None:
+    import torch
+    from safetensors.torch import save_file
+
+    save_file(
+        {"observation.state.q01": torch.zeros(12)},
+        tmp_path / "policy_preprocessor_step_3_normalizer_processor.safetensors",
+    )
+
+    assert _normalizer_feature_dim(str(tmp_path), "observation.state") == 12
 
 
 def test_rollout_request_exposes_all_web_modes() -> None:
