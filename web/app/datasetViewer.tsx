@@ -76,7 +76,7 @@ export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { run
   const refreshDatasets = useCallback(async () => {
     try {
       const values = await read<DatasetSummary[]>('/api/datasets');
-      const visible = values.filter((item) => item.episodes > 0 && item.frames > 0 && item.duration_s > 0);
+      const visible = values.filter((item) => item.status === 'unreadable' || (item.episodes > 0 && item.frames > 0 && item.duration_s > 0));
       setDatasets(visible); setError('');
       setSelectedId((current) => visible.some((item) => item.id === current) ? current : '');
     } catch (refreshError) { setError(refreshError instanceof Error ? refreshError.message : '数据集读取失败'); }
@@ -183,16 +183,17 @@ export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { run
         {filtered.map((dataset) => {
           const compatible = Boolean(dataset.robot_type) && dataset.robot_type === robotType;
           const activeReplay = replaying && activeReplayId === dataset.id;
-          const replayDisabled = replayPending || runningOther || (replaying && !activeReplay) || !compatible;
-          const openDataset = () => { setDetail(null); setEpisode(null); setSelectedId(dataset.id); };
-          return <div className="dataset-management-row" role="button" tabIndex={0} onClick={openDataset} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDataset(); } }} key={dataset.id}>
-            <span><strong>{dataset.id}</strong><small>{dataset.tasks[0] || '未记录任务'} · {dataset.recorded_on || '日期未知'}</small></span>
+          const replayDisabled = replayPending || runningOther || (replaying && !activeReplay) || !compatible || !dataset.available;
+          const openDataset = () => { if (!dataset.available) return; setDetail(null); setEpisode(null); setSelectedId(dataset.id); };
+          const unavailable = !dataset.available;
+          return <div className={`dataset-management-row${unavailable ? ' unavailable' : ''}`} role={unavailable ? undefined : 'button'} aria-disabled={unavailable || undefined} tabIndex={unavailable ? -1 : 0} onClick={openDataset} onKeyDown={(event) => { if (!unavailable && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDataset(); } }} key={dataset.id}>
+            <span><strong>{dataset.id}</strong><small>{dataset.status === 'unreadable' ? '不可读取' : `${dataset.tasks[0] || '未记录任务'} · ${dataset.recorded_on || '日期未知'}`}</small></span>
             <span>{countLabel(dataset.episodes)}</span>
             <span>{durationLabel(dataset.duration_s)}</span>
             <span>{countLabel(dataset.frames)}</span>
             <span>{dataset.fps || '—'} / {dataset.camera_count}</span>
             <span className="dataset-row-actions" onClick={(event) => event.stopPropagation()}>
-              <button className="outline" type="button" onClick={openDataset}>可视化</button>
+              <button className="outline" type="button" disabled={unavailable} title={dataset.error || undefined} onClick={openDataset}>{dataset.status === 'unreadable' ? '不可读取' : '可视化'}</button>
               <button className={activeReplay ? 'danger' : 'outline'} type="button" disabled={replayDisabled} title={compatible ? undefined : `仅支持 ${robotType} 数据`} onClick={() => activeReplay ? void stopReplay() : void startReplay(dataset.id)}>{activeReplay ? '停止' : compatible ? '回放' : '不兼容'}</button>
             </span>
             {dataset.error && <em>{dataset.error}</em>}

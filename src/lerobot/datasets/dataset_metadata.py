@@ -78,6 +78,7 @@ class LeRobotDatasetMetadata:
         *,
         repo_type: Literal["dataset", "bucket"] = "dataset",
         token: str | bool | None = None,
+        local_files_only: bool = False,
     ):
         """Load or download metadata for an existing LeRobot dataset.
 
@@ -105,6 +106,8 @@ class LeRobotDatasetMetadata:
                 token, ``True`` to require the locally stored token, ``False``
                 to disable authentication, or ``None`` to use the Hugging Face
                 Hub default.
+            local_files_only: If ``True``, never download missing metadata from
+                the Hub and report the local filesystem error instead.
         """
         if repo_type not in ("dataset", "bucket"):
             raise ValueError(f"repo_type must be 'dataset' or 'bucket', got {repo_type!r}")
@@ -138,6 +141,8 @@ class LeRobotDatasetMetadata:
                     raise FileNotFoundError
                 self._load_metadata()
             except (FileNotFoundError, NotADirectoryError):
+                if local_files_only:
+                    raise
                 if self.repo_type != "bucket" and is_valid_version(self.revision):
                     if token is None:
                         self.revision = get_safe_version(self.repo_id, self.revision)

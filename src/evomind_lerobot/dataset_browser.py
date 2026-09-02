@@ -55,9 +55,30 @@ def _metadata(dataset_id: str, root: Path):
     from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 
     try:
-        return LeRobotDatasetMetadata(dataset_id, root=root, token=False)
+        return LeRobotDatasetMetadata(dataset_id, root=root, token=False, local_files_only=True)
     except Exception as error:
         raise DatasetUnavailableError(f"元数据不可加载：{error}") from error
+
+
+def _validate_local_data(root: Path, expected_frames: int) -> None:
+    """Validate local parquet footers without reading frame payloads."""
+    import pyarrow.parquet as pq
+
+    paths = sorted((root / "data").glob("*/*.parquet"))
+    if expected_frames > 0 and not paths:
+        raise DatasetUnavailableError("数据文件缺失")
+
+    actual_frames = 0
+    for path in paths:
+        try:
+            actual_frames += pq.read_metadata(path).num_rows
+        except Exception as error:
+            relative = path.relative_to(root)
+            raise DatasetUnavailableError(f"数据文件不可读取：{relative}：{error}") from error
+    if actual_frames != expected_frames:
+        raise DatasetUnavailableError(
+            f"数据帧数不一致：info.json 记录 {expected_frames}，本地 Parquet 实际 {actual_frames}"
+        )
 
 
 def _task_names(metadata: Any) -> list[str]:
@@ -107,9 +128,18 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
     results: list[dict[str, Any]] = []
     for dataset_id, root in _dataset_roots():
         active = dataset_id == active_dataset_id
+        info_path = root / "meta/info.json"
+        fps = 0
+        frames = 0
+        episodes = 0
+        tasks: list[str] = []
+        robot_type = ""
+        recorded_on = ""
+        camera_count = 0
+        status = "recording" if active else "ready"
+        error_message = ""
         try:
-            info = json.loads((root / "meta/info.json").read_text(encoding="utf-8"))
-            info_path = root / "meta/info.json"
+            info = json.loads(info_path.read_text(encoding="utf-8"))
             fps = int(info["fps"])
             frames = int(info["total_frames"])
             episodes = int(info["total_episodes"])
@@ -117,56 +147,42 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
             camera_keys = [
                 key for key, feature in features.items() if feature.get("dtype") in {"video", "image"}
             ]
-            tasks: list[str] = []
-            status = "recording" if active else "ready"
-            error = ""
+            robot_type = str(info.get("robot_type") or "")
+            recorded_on = datetime.fromtimestamp(info_path.stat().st_mtime).astimezone().date().isoformat()
+            camera_count = len(camera_keys)
             if not active:
                 metadata = _metadata(dataset_id, root)
                 tasks = _task_names(metadata)
+                _validate_local_data(root, frames)
                 for episode_index in range(metadata.total_episodes):
                     for video_key in metadata.video_keys:
                         video_path = root / metadata.get_video_file_path(episode_index, video_key)
                         if not video_path.is_file():
                             status = "incomplete"
-                            error = f"缺少视频文件：{video_key} / Episode {episode_index}"
+                            error_message = f"缺少视频文件：{video_key} / Episode {episode_index}"
                             break
-                    if error:
+                    if error_message:
                         break
-            results.append(
-                {
-                    "id": dataset_id,
-                    "path": str(root),
-                    "episodes": episodes,
-                    "frames": frames,
-                    "fps": fps,
-                    "duration_s": frames / fps if fps else 0,
-                    "tasks": tasks,
-                    "robot_type": str(info.get("robot_type") or ""),
-                    "recorded_on": datetime.fromtimestamp(info_path.stat().st_mtime).astimezone().date().isoformat(),
-                    "camera_count": len(camera_keys),
-                    "status": status,
-                    "available": status == "ready",
-                    "error": error,
-                }
-            )
         except (DatasetBrowserError, FileNotFoundError, KeyError, TypeError, ValueError, OSError) as error:
-            results.append(
-                {
-                    "id": dataset_id,
-                    "path": str(root),
-                    "episodes": 0,
-                    "frames": 0,
-                    "fps": 0,
-                    "duration_s": 0,
-                    "tasks": [],
-                    "robot_type": "",
-                    "recorded_on": "",
-                    "camera_count": 0,
-                    "status": "unreadable",
-                    "available": False,
-                    "error": str(error),
-                }
-            )
+            status = "unreadable"
+            error_message = str(error)
+        results.append(
+            {
+                "id": dataset_id,
+                "path": str(root),
+                "episodes": episodes,
+                "frames": frames,
+                "fps": fps,
+                "duration_s": frames / fps if fps else 0,
+                "tasks": tasks,
+                "robot_type": robot_type,
+                "recorded_on": recorded_on,
+                "camera_count": camera_count,
+                "status": status,
+                "available": status == "ready",
+                "error": error_message,
+            }
+        )
     return results
 
 
