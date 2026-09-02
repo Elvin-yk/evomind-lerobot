@@ -263,6 +263,8 @@ def dataset_episode(
         series.append(
             {
                 "label": label,
+                "action_name": action_name,
+                "state_name": state_name,
                 "action": action[indices, dimension].tolist() if dimension < action.shape[1] else [],
                 "state": state[indices, dimension].tolist() if dimension < state.shape[1] else [],
             }
@@ -292,6 +294,7 @@ def dataset_episode(
     length = int(episode["length"])
     return {
         "dataset_id": dataset_id,
+        "robot_type": metadata.robot_type,
         "episode_index": episode_index,
         "frames": length,
         "duration_s": length / metadata.fps if metadata.fps else 0,

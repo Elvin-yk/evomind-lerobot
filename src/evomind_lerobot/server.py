@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import date
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -65,10 +66,17 @@ from evomind_lerobot.piper_service import (
     scan_piper,
     snapshot_piper,
 )
+from evomind_lerobot.robot_assets import (
+    RobotModelNotFoundError,
+    robot_asset_content_type,
+    robot_asset_path,
+    robot_model_manifest,
+)
 from evomind_lerobot.runtime_service import (
     CollectionStartRequest,
     HardwareBusyError,
     PolicyInspectRequest,
+    PolicyPreloadRequest,
     RecordingStartRequest,
     ReplayStartRequest,
     RolloutStartRequest,
@@ -174,7 +182,15 @@ def create_app():
     collection_store = CollectionStore()
     calibration = CalibrationService(events, jobs)
     runtime = RuntimeService(events, jobs, collection_store)
-    app = FastAPI(title="Evomind LeRobot Console", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            runtime.close()
+
+    app = FastAPI(title="Evomind LeRobot Console", version="0.1.0", lifespan=lifespan)
     app.state.events = events
     app.state.jobs = jobs
     app.state.calibration = calibration
@@ -327,6 +343,25 @@ def create_app():
             path,
             media_type="video/mp4",
             headers={"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"},
+        )
+
+    @app.get("/api/dataset/robot-model/{model}")
+    def read_robot_model(model: str):
+        try:
+            return robot_model_manifest(model)
+        except RobotModelNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+
+    @app.get("/api/dataset/robot-assets/{asset_id}/{path:path}")
+    def read_robot_asset(asset_id: str, path: str):
+        try:
+            asset = robot_asset_path(asset_id, path)
+        except RobotModelNotFoundError as error:
+            raise HTTPException(404, str(error)) from error
+        return FileResponse(
+            asset,
+            media_type=robot_asset_content_type(asset),
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
     @app.get("/api/config")
@@ -598,9 +633,28 @@ def create_app():
     @app.post("/api/runtime/policy/inspect")
     def runtime_policy_inspect(body: PolicyInspectRequest):
         try:
-            return inspect_policy_compatibility(body)
+            local_path = require_local_policy(body.policy_path)
+            return inspect_policy_compatibility(body.model_copy(update={"policy_path": local_path}))
         except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/runtime/policy/residency")
+    def runtime_policy_residency():
+        return runtime.policy_residency()
+
+    @app.post("/api/runtime/policy/preload")
+    def runtime_policy_preload(body: PolicyPreloadRequest):
+        try:
+            return runtime.preload_policy(body)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post("/api/runtime/policy/unload")
+    def runtime_policy_unload():
+        try:
+            return runtime.unload_policy()
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
 
     @app.post("/api/runtime/replay/start")
     def runtime_replay_start(body: ReplayStartRequest):

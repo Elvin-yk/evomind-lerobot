@@ -82,6 +82,12 @@ class PolicyInspectRequest(BaseModel):
     policy_path: str = Field(min_length=1)
 
 
+class PolicyPreloadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_path: str = Field(min_length=1)
+
+
 class ReplayStartRequest(BaseModel):
     dataset_id: str = Field(min_length=1)
     episode: int = Field(default=0, ge=0)
@@ -263,20 +269,26 @@ def _robot_payload(configuration: DeviceConfiguration, fps: int, *, cameras: boo
     return payload
 
 
-def _configured_visual_features(configuration: DeviceConfiguration) -> set[str]:
-    """Return policy-facing visual keys without opening cameras or serial ports."""
+def _configured_camera_feature_name(
+    configuration: DeviceConfiguration,
+    camera: CameraBinding,
+) -> str:
+    """Return the feature name emitted by the configured robot at runtime."""
     bindings = _device_bindings(configuration, "robot")
     dual = {binding.side for binding in bindings} >= {"left", "right"}
-    keys: set[str] = set()
-    for camera in configuration.camera_bindings:
-        if dual and camera.side in {"left", "right"}:
-            name = f"{camera.side}_{_camera_key(camera.alias, camera.side)}"
-        elif dual and configuration.robot_type != "bi_so_follower":
-            name = f"right_{camera.alias}"
-        else:
-            name = camera.alias
-        keys.add(f"observation.images.{name}")
-    return keys
+    if dual and camera.side in {"left", "right"}:
+        return f"{camera.side}_{_camera_key(camera.alias, camera.side)}"
+    if dual and configuration.robot_type != "bi_so_follower":
+        return f"right_{camera.alias}"
+    return camera.alias
+
+
+def _configured_visual_features(configuration: DeviceConfiguration) -> set[str]:
+    """Return policy-facing visual keys without opening cameras or serial ports."""
+    return {
+        f"observation.images.{_configured_camera_feature_name(configuration, camera)}"
+        for camera in configuration.camera_bindings
+    }
 
 
 def _configured_vector_dimensions(configuration: DeviceConfiguration) -> tuple[int | None, int | None]:
@@ -299,7 +311,14 @@ def _camera_rename_map(
     if not missing or not extra:
         return {}
 
-    slot_by_feature = {f"observation.images.{slot.alias}": slot for slot in configuration.camera_slots}
+    slot_by_alias = {slot.alias: slot for slot in configuration.camera_slots}
+    slot_by_feature = {
+        f"observation.images.{_configured_camera_feature_name(configuration, camera)}": slot_by_alias[
+            camera.alias
+        ]
+        for camera in configuration.camera_bindings
+        if camera.alias in slot_by_alias
+    }
     rename_map: dict[str, str] = {}
     for source in sorted(extra):
         slot = slot_by_feature.get(source)
@@ -530,10 +549,11 @@ def inspect_policy_compatibility(request: PolicyInspectRequest) -> dict[str, Any
     }
 
 
-def _execute_rollout(payload: dict[str, Any]) -> None:
+def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = None) -> None:
     from lerobot.configs import PreTrainedConfig
     from lerobot.configs.dataset import DatasetRecordConfig
     from lerobot.configs.video import RGBEncoderConfig
+    from lerobot.rollout import context as rollout_context
     from lerobot.rollout.configs import (
         BaseStrategyConfig,
         DAggerStrategyConfig,
@@ -592,22 +612,30 @@ def _execute_rollout(payload: dict[str, Any]) -> None:
         ),
     }[request.strategy]
     inference = RTCInferenceConfig() if request.inference == "rtc" else SyncInferenceConfig()
-    rollout(
-        RolloutConfig(
-            robot=robot,
-            teleop=teleop if needs_teleop else None,
-            policy=policy,
-            strategy=strategy,
-            inference=inference,
-            dataset=dataset,
-            fps=request.fps,
-            duration=request.duration_s,
-            task=request.task,
-            rename_map=inspection["rename_map"],
-            display_data=False,
-            play_sounds=False,
-        )
+    rollout_config = RolloutConfig(
+        robot=robot,
+        teleop=teleop if needs_teleop else None,
+        policy=policy,
+        strategy=strategy,
+        inference=inference,
+        dataset=dataset,
+        fps=request.fps,
+        duration=request.duration_s,
+        task=request.task,
+        rename_map=inspection["rename_map"],
+        display_data=False,
+        play_sounds=False,
     )
+    if preloaded_policy is None:
+        rollout(rollout_config)
+        return
+
+    original_loader = rollout_context._load_pretrained_policy
+    rollout_context._load_pretrained_policy = lambda _config: preloaded_policy
+    try:
+        rollout(rollout_config)
+    finally:
+        rollout_context._load_pretrained_policy = original_loader
 
 
 def _dataset(dataset_id: str) -> dict[str, Any]:
@@ -673,6 +701,76 @@ def _run_workflow(
         event_queue.put({"kind": "exit", "error": ""})
 
 
+def _load_resident_policy(policy_path: str) -> tuple[Any, dict[str, Any]]:
+    """Load one local policy and keep it on its configured accelerator."""
+    import torch
+
+    from lerobot import policies as _policy_configs  # noqa: F401
+    from lerobot.configs import PreTrainedConfig
+    from lerobot.rollout.context import _load_pretrained_policy
+    from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available
+    from lerobot.utils.import_utils import register_third_party_plugins
+
+    register_third_party_plugins()
+    policy_config = PreTrainedConfig.from_pretrained(policy_path)
+    policy_config.pretrained_path = policy_path
+    configured_device = policy_config.device
+    device = (
+        configured_device
+        if configured_device and is_torch_device_available(configured_device)
+        else auto_select_torch_device().type
+    )
+    policy = _load_pretrained_policy(policy_config).to(device)
+    policy.eval()
+    allocated_bytes = torch.cuda.memory_allocated() if str(device).startswith("cuda") else None
+    return policy, {
+        "policy_path": policy_path,
+        "policy_type": policy_config.type,
+        "device": str(device),
+        "allocated_bytes": allocated_bytes,
+    }
+
+
+def _run_policy_resident(
+    policy_path: str,
+    event_queue: Any,
+    control_queue: Any,
+    command_queue: Any,
+) -> None:
+    """Own a GPU policy across multiple independent rollout sessions."""
+    from lerobot.utils.runtime_bridge import use_runtime_bridge
+
+    try:
+        policy, details = _load_resident_policy(policy_path)
+    except BaseException as error:
+        event_queue.put({"kind": "resident_error", "error": str(error) or error.__class__.__name__})
+        return
+    event_queue.put({"kind": "resident_ready", "details": details})
+
+    bridge = ProcessRuntimeBridge(event_queue, command_queue)
+    while True:
+        message = control_queue.get()
+        if message.get("kind") == "shutdown":
+            del policy
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                logging.info("Could not explicitly clear accelerator cache", exc_info=True)
+            return
+        if message.get("kind") != "rollout":
+            continue
+        try:
+            with use_runtime_bridge(bridge):
+                _execute_rollout(message["payload"], preloaded_policy=policy)
+        except BaseException as error:
+            event_queue.put({"kind": "job_exit", "error": str(error) or error.__class__.__name__})
+        else:
+            event_queue.put({"kind": "job_exit", "error": ""})
+
+
 class RuntimeService:
     """Own one native LeRobot workflow process at a time."""
 
@@ -695,6 +793,13 @@ class RuntimeService:
         self._latest: dict[str, Any] | None = None
         self._active_dataset_id: str | None = None
         self._tracked_collection = False
+        self._using_resident = False
+        self._resident_process: multiprocessing.Process | None = None
+        self._resident_event_queue: Any = None
+        self._resident_control_queue: Any = None
+        self._resident_command_queue: Any = None
+        self._resident_details: dict[str, Any] | None = None
+        self._resident_loading_path: str | None = None
 
     @property
     def active_dataset_id(self) -> str | None:
@@ -705,11 +810,112 @@ class RuntimeService:
         with self._lock:
             process = self._process
             return {
-                "running": bool(process and process.is_alive()),
+                "running": bool(self._operation and process and process.is_alive()),
                 "job_id": self._job_id or None,
                 "operation": self._operation.value if self._operation else None,
                 "event": self._latest,
+                "policy_residency": self.policy_residency(),
             }
+
+    def policy_residency(self) -> dict[str, Any]:
+        with self._lock:
+            process = self._resident_process
+            ready = bool(process and process.is_alive() and self._resident_details)
+            loading = bool(process and process.is_alive() and self._resident_loading_path)
+            return {
+                "state": "ready" if ready else "loading" if loading else "empty",
+                **({"policy_path": self._resident_loading_path} if loading else {}),
+                **(self._resident_details or {}),
+            }
+
+    def preload_policy(self, request: PolicyPreloadRequest) -> dict[str, Any]:
+        policy_path = require_local_policy(request.policy_path)
+        with self._lock:
+            if self._operation is not None:
+                raise RuntimeError("请先结束当前运行任务")
+            process = self._resident_process
+            if (
+                process
+                and process.is_alive()
+                and self._resident_details
+                and self._resident_details.get("policy_path") == policy_path
+            ):
+                return self.policy_residency()
+            if process and process.is_alive() and self._resident_loading_path:
+                raise RuntimeError("模型正在预加载")
+        self.unload_policy()
+
+        event_queue = self._context.Queue()
+        control_queue = self._context.Queue()
+        command_queue = self._context.Queue()
+        process = self._context.Process(
+            target=_run_policy_resident,
+            args=(policy_path, event_queue, control_queue, command_queue),
+            name="evomind-policy-resident",
+        )
+        with self._lock:
+            self._resident_process = process
+            self._resident_event_queue = event_queue
+            self._resident_control_queue = control_queue
+            self._resident_command_queue = command_queue
+            self._resident_details = None
+            self._resident_loading_path = policy_path
+        try:
+            process.start()
+        except Exception:
+            self._discard_resident(terminate=False)
+            raise
+        try:
+            item = event_queue.get(timeout=1800)
+        except Empty as error:
+            self._discard_resident(terminate=True)
+            raise RuntimeError("模型预加载超时") from error
+        if item.get("kind") != "resident_ready":
+            message = str(item.get("error") or "模型预加载失败")
+            process.join(timeout=5)
+            self._discard_resident(terminate=False)
+            raise RuntimeError(message)
+        with self._lock:
+            self._resident_details = item["details"]
+            self._resident_loading_path = None
+        return self.policy_residency()
+
+    def unload_policy(self) -> dict[str, Any]:
+        with self._lock:
+            if self._operation is not None and self._using_resident:
+                raise RuntimeError("请先结束正在使用该模型的任务")
+            process = self._resident_process
+            control_queue = self._resident_control_queue
+        if process and process.is_alive() and control_queue is not None:
+            control_queue.put({"kind": "shutdown"})
+            process.join(timeout=10)
+        self._discard_resident(terminate=bool(process and process.is_alive()))
+        return self.policy_residency()
+
+    def close(self) -> None:
+        """Release a resident model when the local console shuts down."""
+        with self._lock:
+            process = self._resident_process
+            control_queue = self._resident_control_queue
+            using_resident = self._using_resident
+        if process and process.is_alive() and control_queue is not None and not using_resident:
+            control_queue.put({"kind": "shutdown"})
+            process.join(timeout=10)
+        self._discard_resident(terminate=bool(process and process.is_alive()))
+
+    def _discard_resident(self, *, terminate: bool) -> None:
+        with self._lock:
+            process = self._resident_process
+        if terminate and process and process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        with self._lock:
+            self._resident_process = None
+            self._resident_event_queue = None
+            self._resident_control_queue = None
+            self._resident_command_queue = None
+            self._resident_details = None
+            self._resident_loading_path = None
 
     def start(self, operation: Operation, request: BaseModel) -> dict[str, Any]:
         if operation.value not in _EXECUTORS:
@@ -721,6 +927,8 @@ class RuntimeService:
             collection_task = self._collection_store.require_today_task(request.task_id)
             if collection_task["collection_method"] != "manual":
                 raise ValueError("该任务是 Policy 采集任务，请使用统一采集入口")
+        if operation is Operation.ROLLOUT and isinstance(request, RolloutStartRequest):
+            request = request.model_copy(update={"policy_path": require_local_policy(request.policy_path)})
         return self._start(operation, request, collection_task)
 
     def start_collection(self, request: CollectionStartRequest) -> dict[str, Any]:
@@ -756,6 +964,14 @@ class RuntimeService:
         collection_task: dict[str, Any] | None,
     ) -> dict[str, Any]:
         payload = request.model_dump()
+        with self._lock:
+            resident_path = (
+                (self._resident_details or {}).get("policy_path")
+                if self._resident_process and self._resident_process.is_alive()
+                else None
+            )
+        if operation is Operation.ROLLOUT and resident_path and resident_path != payload.get("policy_path"):
+            raise ValueError("显存中驻留的是另一个 Policy，请先卸载或预加载当前 Policy")
         if operation is Operation.RECORDING and collection_task is not None:
             payload.update(
                 {
@@ -788,13 +1004,29 @@ class RuntimeService:
             except Exception:
                 self._jobs.release(job.id, failed=True, message="采集任务启动失败")
                 raise
-        event_queue = self._context.Queue()
-        command_queue = self._context.Queue()
-        process = self._context.Process(
-            target=_run_workflow,
-            args=(operation.value, payload, event_queue, command_queue),
-            name=f"evomind-{operation.value}",
-        )
+        with self._lock:
+            resident_process = self._resident_process
+            resident_path = (self._resident_details or {}).get("policy_path")
+            use_resident = bool(
+                operation is Operation.ROLLOUT
+                and resident_process
+                and resident_process.is_alive()
+                and resident_path == payload.get("policy_path")
+            )
+            if use_resident:
+                event_queue = self._resident_event_queue
+                command_queue = self._resident_command_queue
+                control_queue = self._resident_control_queue
+                process = resident_process
+            else:
+                event_queue = self._context.Queue()
+                command_queue = self._context.Queue()
+                control_queue = None
+                process = self._context.Process(
+                    target=_run_workflow,
+                    args=(operation.value, payload, event_queue, command_queue),
+                    name=f"evomind-{operation.value}",
+                )
         with self._lock:
             self._process = process
             self._event_queue = event_queue
@@ -802,9 +1034,13 @@ class RuntimeService:
             self._job_id = job.id
             self._operation = operation
             self._tracked_collection = collection_task is not None
+            self._using_resident = use_resident
             self._latest = self._events.latest.as_dict()
         try:
-            process.start()
+            if use_resident:
+                control_queue.put({"kind": "rollout", "payload": payload})
+            else:
+                process.start()
         except Exception:
             self._clear()
             if collection_task is not None and self._collection_store is not None:
@@ -843,6 +1079,7 @@ class RuntimeService:
                 job_id = self._job_id
                 operation = self._operation
                 tracked_collection = self._tracked_collection
+                using_resident = self._using_resident
             if process is None or event_queue is None or operation is None:
                 return
             try:
@@ -850,8 +1087,10 @@ class RuntimeService:
             except Empty:
                 if process.is_alive():
                     continue
+                if using_resident:
+                    error = "模型驻留进程意外退出"
                 break
-            if item["kind"] == "exit":
+            if item["kind"] in {"exit", "job_exit"}:
                 error = item["error"]
                 break
             phase = Phase(item["phase"])
@@ -884,7 +1123,8 @@ class RuntimeService:
                     logging.exception("Failed to persist collection progress")
             with self._lock:
                 self._latest = event.as_dict()
-        process.join(timeout=1)
+        if not using_resident:
+            process.join(timeout=1)
         if error:
             event = self._events.publish(
                 operation,
@@ -912,12 +1152,14 @@ class RuntimeService:
             self._operation = None
             self._active_dataset_id = None
             self._tracked_collection = False
+            self._using_resident = False
 
 
 __all__ = [
     "HardwareBusyError",
     "CollectionStartRequest",
     "PolicyInspectRequest",
+    "PolicyPreloadRequest",
     "RecordingStartRequest",
     "ReplayStartRequest",
     "RolloutStartRequest",

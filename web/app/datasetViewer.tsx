@@ -1,8 +1,10 @@
 'use client';
 
 import { Pause, Play } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+
+const RobotTrajectory3DPanel = lazy(() => import('./robotTrajectory3D/RobotTrajectory3DPanel').then((module) => ({ default: module.RobotTrajectory3DPanel })));
 
 type RuntimeEvent = {
   sequence: number; operation: string; phase: string; message: string;
@@ -19,9 +21,9 @@ type DatasetDetail = {
   cameras: { key: string; label: string; resolution: string | null; depth: boolean }[];
   episodes: { episode_index: number; frames: number; duration_s: number; tasks: string[] }[];
 };
-type EpisodeSeries = { label: string; action: number[]; state: number[] };
+type EpisodeSeries = { label: string; action_name: string; state_name: string; action: number[]; state: number[] };
 type EpisodePayload = {
-  dataset_id: string; episode_index: number; frames: number; duration_s: number; fps: number; tasks: string[];
+  dataset_id: string; robot_type: string | null; episode_index: number; frames: number; duration_s: number; fps: number; tasks: string[];
   timestamps: number[]; series: EpisodeSeries[];
   videos: { key: string; label: string; url: string; from_timestamp: number; to_timestamp: number }[];
 };
@@ -301,6 +303,7 @@ function EpisodePlayer({ episode }: { episode: EpisodePayload }) {
       <span>{durationLabel(episode.duration_s)}</span>
       <select value={rate} onChange={(item) => setRate(Number(item.target.value))} aria-label="播放速度"><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option></select>
     </div>
+    <Suspense fallback={<div className="dataset-placeholder compact">正在加载 3D 回放</div>}><RobotTrajectory3DPanel episode={episode} currentTime={currentTime} /></Suspense>
     <TrajectoryChart episode={episode} currentTime={currentTime} hidden={hidden} onHiddenChange={setHidden} onSeek={seek} />
   </div>;
 }

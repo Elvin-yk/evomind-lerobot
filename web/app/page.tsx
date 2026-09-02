@@ -22,7 +22,10 @@ export type RuntimeEvent = {
   job_id: string | null; data: Record<string, unknown>; timestamp: string;
 };
 type RuntimeStatus = { lerobot_version: string | null; runtime: { hostname: string } & StorageInfo; event: RuntimeEvent };
-type WorkflowRuntime = { running: boolean; job_id: string | null; operation: string | null; event: RuntimeEvent | null };
+type PolicyResidency = {
+  state: 'empty' | 'loading' | 'ready'; policy_path?: string; policy_type?: string; device?: string; allocated_bytes?: number | null;
+};
+type WorkflowRuntime = { running: boolean; job_id: string | null; operation: string | null; event: RuntimeEvent | null; policy_residency?: PolicyResidency };
 type Catalog = { systems: SystemProfile[] };
 type SerialDevice = { id: string; path: string; device: string };
 type CanDevice = { id: string; serial_number: string; interface: string; state: string; up: boolean; bitrate: number | null };
@@ -1034,6 +1037,7 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   const [policyPath, setPolicyPath] = useState(workspace.policies[0]?.path ?? '');
   const [policyInspection, setPolicyInspection] = useState<PolicyInspection | null>(null);
   const [policyInspecting, setPolicyInspecting] = useState(false);
+  const [policyPreloading, setPolicyPreloading] = useState(false);
   const [datasetId, setDatasetId] = useState(workspace.datasets[0]?.id ?? '');
   const [episode, setEpisode] = useState(0);
   const [runtime, setRuntime] = useState<WorkflowRuntime>({ running: false, job_id: null, operation: null, event: null });
@@ -1130,6 +1134,36 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
     finally { setPolicyInspecting(false); }
   }
 
+  async function preloadPolicy() {
+    setOperationError(''); setPolicyPreloading(true);
+    try {
+      const residency = await postJson<PolicyResidency>('/api/runtime/policy/preload', { policy_path: effectivePolicyPath });
+      setRuntime((current) => ({ ...current, policy_residency: residency }));
+    } catch (preloadError) {
+      setOperationError(preloadError instanceof Error ? preloadError.message : '模型预加载失败');
+    } finally { setPolicyPreloading(false); }
+  }
+
+  async function unloadPolicy() {
+    setOperationError('');
+    try {
+      const residency = await postJson<PolicyResidency>('/api/runtime/policy/unload');
+      setRuntime((current) => ({ ...current, policy_residency: residency }));
+    } catch (unloadError) { setOperationError(unloadError instanceof Error ? unloadError.message : '模型卸载失败'); }
+  }
+
+  async function reloadPolicy() {
+    setOperationError(''); setPolicyPreloading(true);
+    try {
+      const empty = await postJson<PolicyResidency>('/api/runtime/policy/unload');
+      setRuntime((current) => ({ ...current, policy_residency: empty }));
+      const residency = await postJson<PolicyResidency>('/api/runtime/policy/preload', { policy_path: effectivePolicyPath });
+      setRuntime((current) => ({ ...current, policy_residency: residency }));
+    } catch (reloadError) {
+      setOperationError(reloadError instanceof Error ? reloadError.message : '模型重新加载失败');
+    } finally { setPolicyPreloading(false); }
+  }
+
   async function command(value: 'stop' | 'finish_episode' | 'rerecord_episode' | 'pause_resume' | 'correction' | 'toggle_highlight') {
     pendingSequence.current = event?.sequence ?? 0; setPendingCommand(value);
     try { setRuntime(await postJson<WorkflowRuntime>('/api/runtime/command', { command: value })); }
@@ -1143,8 +1177,24 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
   const canControlEpisode = runningThis && recordingPhase === 'running' && !pendingCommand;
   const canSkipReset = runningThis && recordingPhase === 'resetting' && !pendingCommand;
   const storageRefreshKey = runtimeEvent?.data.stage === 'episode_saved' ? runtimeEvent.sequence : null;
+  const residentPolicy = runtime.policy_residency;
+  const selectedPolicyResident = residentPolicy?.state === 'ready' && residentPolicy.policy_path === effectivePolicyPath;
+  const residentPolicyName = workspace.policies.find((policy) => policy.path === residentPolicy?.policy_path)?.id ?? residentPolicy?.policy_path;
+  const policyControls = <PolicyResidencyControls
+    resident={residentPolicy}
+    residentName={residentPolicyName}
+    selectedResident={selectedPolicyResident}
+    hasPolicy={Boolean(effectivePolicyPath)}
+    runtimeRunning={runtime.running}
+    inspecting={policyInspecting}
+    preloading={policyPreloading}
+    onInspect={inspectPolicy}
+    onPreload={preloadPolicy}
+    onReload={reloadPolicy}
+    onUnload={unloadPolicy}
+  />;
 
-  return <section className={`workflow-page${kind === 'teleoperation' || kind === 'recording' ? ' compact-workflow' : ''}${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}${kind === 'recording' ? ' recording-workflow' : ''}`}>
+  return <section className={`workflow-page${kind === 'teleoperation' || kind === 'recording' ? ' compact-workflow' : ''}${kind === 'teleoperation' ? ' teleoperation-workflow' : ''}${kind === 'recording' ? ' recording-workflow' : ''}${kind === 'inference' ? ' inference-workflow' : ''}`}>
     {statusSlot && createPortal(<WorkflowSummary kind={kind} dataset={selectedDataset} policy={selectedPolicy} policyPath={effectivePolicyPath} event={event} error={visibleError} />, statusSlot)}
     <div className="workflow-grid"><div className="workflow-primary">
       {kind === 'teleoperation' && <WorkflowSection title="控制设置"><div className="form-grid"><label className="full-field">控制频率<select value={fps} onChange={(item) => updateFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label></div></WorkflowSection>}
@@ -1152,17 +1202,16 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
         <label className="full-field">任务<select value={taskId} onChange={(item) => { setTaskId(item.target.value); setPolicyInspection(null); }} disabled={runningThis}>{dailyTasks.length === 0 && <option value="">请先在采集进度中创建今日任务</option>}{dailyTasks.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.collection_method === 'policy' ? 'Policy 采集' : '人工采集'}{item.completed ? ' · 已完成' : ''}</option>)}</select></label>
         {selectedTask && <div className="selected-task-description full-field"><span>{selectedTask.collection_method === 'policy' ? 'Policy 采集' : '人工采集'} · 参数由采集进度任务锁定</span><strong>{selectedTask.description}</strong><small>目标 {Math.round(selectedTask.target_duration_s / 60)} 分钟 · 有效 {Math.round(selectedTask.actual_duration_s / 60)} 分钟 · 已保存 {selectedTask.episode_count} Episodes</small></div>}
         {selectedTask?.collection_method === 'policy' && <><label>采集策略<input value={rolloutModes[selectedTask.rollout_strategy].label} readOnly /></label><label>推理后端<input value={selectedTask.inference === 'rtc' ? 'RTC 实时分块' : '同步推理'} readOnly /></label><label className="full-field">本地 Policy<input value={selectedPolicy?.id ?? selectedTask.policy_path} readOnly /></label><label>最大运行时间<input value={`${selectedTask.duration_s} 秒`} readOnly /></label><label>帧率<input value={`${selectedTask.fps} FPS`} readOnly /></label></>}
-      </div>{selectedTask?.collection_method === 'policy' && <div className="workflow-actions"><span>启动时会再次检查本地模型、摄像头映射和状态/动作维度。</span><button className="outline" type="button" disabled={runningThis || policyInspecting} onClick={() => void inspectPolicy()}>{policyInspecting ? '正在检查' : '检查模型兼容性'}</button></div>}{policyInspection && <PolicyInspectionResult inspection={policyInspection} />}</WorkflowSection></>}
+      </div>{selectedTask?.collection_method === 'policy' && policyControls}{policyInspection && <PolicyInspectionResult inspection={policyInspection} />}</WorkflowSection></>}
       {kind === 'inference' && <WorkflowSection title="本地 Policy 试跑"><div className="form-grid">
-        <label className="full-field">Policy<select value={effectivePolicyPath} onChange={(item) => { setPolicyPath(item.target.value); setPolicyInspection(null); }} disabled={runningThis}>{workspace.policies.length === 0 && <option value="">本机未发现模型</option>}{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id} · {policy.type}</option>)}</select></label>
+        <label className="full-field">Policy<select value={effectivePolicyPath} onChange={(item) => { setPolicyPath(item.target.value); setPolicyInspection(null); }} disabled={runningThis || policyPreloading}>{workspace.policies.length === 0 && <option value="">本机未发现模型</option>}{workspace.policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id} · {policy.type}</option>)}</select>{effectivePolicyPath && <small className="field-help">本机路径：{effectivePolicyPath}</small>}</label>
         <label>推理后端<select value={inference} onChange={(item) => setInference(item.target.value as RolloutInference)} disabled={runningThis}><option value="sync">同步推理</option><option value="rtc">RTC 实时分块</option></select></label>
         <label>最大运行时间<input type="number" value={duration} onChange={(item) => setDuration(Number(item.target.value))} disabled={runningThis} min="1" /></label>
         <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={runningThis}><option value="30">30 FPS</option><option value="20">20 FPS</option><option value="15">15 FPS</option></select></label>
-        <label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="使用训练数据中的任务描述效果最稳定" /></label>
-        <div className="selected-task-description full-field"><span>纯推理</span><strong>不创建 Dataset，也不计入采集进度</strong></div>
-      </div><div className="workflow-actions"><span>检查只读取配置，不加载权重，也不会连接或移动机械臂。</span><button className="outline" type="button" disabled={runningThis || policyInspecting || !effectivePolicyPath} onClick={() => void inspectPolicy()}>{policyInspecting ? '正在检查' : '检查模型兼容性'}</button></div>{policyInspection && <PolicyInspectionResult inspection={policyInspection} />}</WorkflowSection>}
+        <label className="full-field">任务描述<input value={task} onChange={(item) => setTask(item.target.value)} disabled={runningThis} placeholder="使用训练数据中的任务描述效果最稳定" /><small className="field-help">Checkpoint 不记录唯一任务描述；这里是本次推理传给模型的指令。</small></label>
+      </div>{policyControls}{policyInspection && <PolicyInspectionResult inspection={policyInspection} />}</WorkflowSection>}
       {kind === 'replay' && <><WorkflowSection title="回放来源"><div className="form-grid"><label className="full-field">数据集<select value={effectiveDatasetId} onChange={(item) => { setDatasetId(item.target.value); setEpisode(0); }} disabled={runningThis}>{workspace.datasets.length === 0 && <option value="">没有本地数据集</option>}{workspace.datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.id}</option>)}</select></label><label>Episode<input type="number" value={episode} onChange={(item) => setEpisode(Number(item.target.value))} disabled={runningThis} min="0" max={Math.max(0, (selectedDataset?.episodes ?? 1) - 1)} /></label></div></WorkflowSection><WorkflowSection title="执行设备">{followers.map((follower) => <div className="workflow-device" key={follower.id}><div><strong>{bindingTitle(follower.alias)}</strong><span>{serialIdentity(follower.id)}</span></div><i>已连接</i></div>)}</WorkflowSection></>}
-      <div className="workflow-actions"><span>{kind === 'inference' ? '纯推理不会写入 Dataset' : kind === 'replay' ? '回放会直接驱动机械臂执行记录动作' : ''}</span><div className={`workflow-command-buttons${runningThis && kind === 'recording' ? ' episode-controls' : ''}`}>
+      <div className="workflow-actions">{kind === 'replay' && <span>回放会直接驱动机械臂执行记录动作</span>}<div className={`workflow-command-buttons${runningThis && kind === 'recording' ? ' episode-controls' : ''}`}>
         {runningThis && kind === 'recording' && selectedTask?.collection_method === 'manual' && <><button className="primary" type="button" disabled={!canControlEpisode} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' && recordingPhase !== 'resetting' ? '正在保存' : '保存这一段'}</button><button className="outline" type="button" disabled={!canControlEpisode} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录这一段'}</button>{recordingPhase === 'resetting' && <button className="outline" type="button" disabled={!canSkipReset} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在跳过' : '跳过等待'}</button>}</>}
         {runningThis && kind === 'recording' && selectedStrategy === 'episodic' && <><button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('finish_episode')}>{pendingCommand === 'finish_episode' ? '正在切换' : rolloutPhase === 'resetting' ? '跳过重置' : '结束本轮'}</button>{rolloutPhase !== 'resetting' && <button className="outline" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('rerecord_episode')}>{pendingCommand === 'rerecord_episode' ? '正在重录' : '重录本轮'}</button>}</>}
         {runningThis && kind === 'recording' && (selectedStrategy === 'dagger_corrections' || selectedStrategy === 'dagger_continuous') && <>{rolloutPhase === 'autonomous' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('pause_resume')}>暂停并接管</button>}{rolloutPhase === 'paused' && <><button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('correction')}>开始人工纠正</button><button className="outline" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('pause_resume')}>恢复自主</button></>}{rolloutPhase === 'correcting' && <button className="primary" type="button" disabled={Boolean(pendingCommand)} onClick={() => void command('correction')}>结束纠正并保存</button>}</>}
@@ -1175,6 +1224,30 @@ function WorkflowPage({ kind, configuration, workspace, runtimeEvent, storage, s
 
 function PolicyInspectionResult({ inspection }: { inspection: PolicyInspection }) {
   return <div className={`calibration-progress ${inspection.compatible ? 'done' : 'error'}`}><div><span>{inspection.policy_type.toUpperCase()} · {inspection.revision?.slice(0, 10) ?? '本地模型'}</span><strong>{inspection.compatible ? '模型与当前设备兼容' : '模型与当前设备不兼容'}</strong><small>状态/动作 {inspection.state_dim ?? '—'} / {inspection.action_dim ?? '—'} 维 · 摄像头 {inspection.expected_visuals.length} 路{Object.keys(inspection.rename_map).length > 0 ? ` · 自动映射 ${Object.entries(inspection.rename_map).map(([from, to]) => `${from.split('.').pop()} → ${to.split('.').pop()}`).join(', ')}` : ''}</small>{inspection.issues.map((issue) => <small key={issue}>{issue}</small>)}</div></div>;
+}
+
+function PolicyResidencyControls({ resident, residentName, selectedResident, hasPolicy, runtimeRunning, inspecting, preloading, onInspect, onPreload, onReload, onUnload }: {
+  resident?: PolicyResidency; residentName?: string; selectedResident: boolean; hasPolicy: boolean;
+  runtimeRunning: boolean; inspecting: boolean; preloading: boolean;
+  onInspect: () => Promise<void>; onPreload: () => Promise<void>; onReload: () => Promise<void>; onUnload: () => Promise<void>;
+}) {
+  const state = resident?.state ?? 'empty';
+  const loading = state === 'loading' || preloading;
+  const ready = state === 'ready';
+  const status = loading ? '正在加载到显存' : ready ? selectedResident ? '当前模型已驻留显存' : '显存中驻留了其他模型' : '显存空闲';
+  return <div className="policy-residency-controls">
+    <div className={`policy-residency ${selectedResident ? 'ready' : state}`}>
+      <span>显存模型状态</span><strong>{status}</strong>
+      {residentName && state !== 'empty' && <small>{residentName}{resident?.policy_type && resident?.device ? ` · ${resident.policy_type.toUpperCase()} · ${resident.device}` : ''}</small>}
+    </div>
+    <div className={`policy-actions${ready ? ' resident-ready' : ''}`}>
+      <button className="outline" type="button" disabled={runtimeRunning || inspecting || loading || !hasPolicy} onClick={() => void onInspect()}>{inspecting ? '正在检查' : '检查模型兼容性'}</button>
+      {ready ? <>
+        <button className="outline" type="button" disabled={runtimeRunning || loading || !hasPolicy} onClick={() => void onReload()}>{loading ? '正在重新加载' : selectedResident ? '重新加载' : '加载所选模型'}</button>
+        <button className="outline" type="button" disabled={runtimeRunning || loading} onClick={() => void onUnload()}>从显存卸载</button>
+      </> : <button className="primary" type="button" disabled={runtimeRunning || loading || !hasPolicy} onClick={() => void onPreload()}>{loading ? '正在加载模型' : '预加载到显存'}</button>}
+    </div>
+  </div>;
 }
 
 function WorkflowSection({ title, children }: { title: string; children: React.ReactNode }) {
