@@ -9,21 +9,34 @@ type RuntimeEvent = {
   data: Record<string, unknown>; timestamp: string;
 };
 type WorkflowRuntime = { running: boolean; operation: string | null; event: RuntimeEvent | null };
+type DatasetProvenance = {
+  collection_method: 'manual' | 'policy' | null; control_source: ControlSource;
+  rollout_strategy: string | null; inference: 'sync' | 'rtc' | null;
+  policy: { path: string; type: string } | null; declared: boolean;
+};
+type ControlSource = 'policy' | 'human_intervention' | 'human_demonstration' | 'mixed' | 'unknown';
+type ControlBreakdown = {
+  mode: ControlSource; policy_frames: number; intervention_frames: number;
+  demonstration_frames: number; unknown_frames: number;
+  segments: { source: ControlSource; start_s: number; end_s: number; frames: number }[];
+};
 type DatasetSummary = {
   id: string; path: string; episodes: number; frames: number; fps: number; duration_s: number;
   tasks: string[]; camera_count: number; status: 'ready' | 'recording' | 'incomplete' | 'unreadable';
-  robot_type: string; recorded_on: string; available: boolean; error: string;
+  robot_type: string; recorded_on: string; available: boolean; error: string; provenance: DatasetProvenance;
 };
 type DatasetDetail = {
   id: string; robot_type: string | null; fps: number; frames: number; duration_s: number; tasks: string[];
   cameras: { key: string; label: string; resolution: string | null; depth: boolean }[];
   episodes: { episode_index: number; frames: number; duration_s: number; tasks: string[] }[];
+  provenance: DatasetProvenance;
 };
 type EpisodeSeries = { label: string; action: number[]; state: number[] };
 type EpisodePayload = {
   dataset_id: string; episode_index: number; frames: number; duration_s: number; fps: number; tasks: string[];
   timestamps: number[]; series: EpisodeSeries[];
   videos: { key: string; label: string; url: string; from_timestamp: number; to_timestamp: number }[];
+  provenance: DatasetProvenance; controls: ControlBreakdown;
 };
 
 const COLORS = ['#111111', '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#d97706', '#0891b2', '#db2777', '#4f46e5', '#65a30d', '#7c3aed', '#ea580c'];
@@ -54,6 +67,26 @@ function durationLabel(seconds: number) {
 
 function countLabel(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value);
+}
+
+const strategyLabels: Record<string, string> = {
+  episodic: '分轮评测', sentry: '连续记录', highlight: '精彩片段',
+  dagger: 'DAgger', dagger_corrections: 'DAgger 纠正', dagger_continuous: 'DAgger 连续',
+};
+
+function sourceLabel(source: ControlSource) {
+  return {
+    policy: 'Policy 推理', human_intervention: '人工干预', human_demonstration: '人工示教',
+    mixed: 'Policy + 人工干预', unknown: '来源未标注',
+  }[source];
+}
+
+function provenanceDetail(provenance: DatasetProvenance) {
+  const parts: string[] = [];
+  if (provenance.rollout_strategy) parts.push(strategyLabels[provenance.rollout_strategy] ?? provenance.rollout_strategy);
+  if (provenance.inference) parts.push(provenance.inference === 'rtc' ? 'RTC' : '同步推理');
+  if (!provenance.declared) parts.push(provenance.rollout_strategy ? '由帧字段识别' : '缺少采集元数据');
+  return parts.join(' · ');
 }
 
 export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { runtimeEvent: RuntimeEvent | null; robotType: string; statusSlot: HTMLDivElement | null }) {
@@ -177,7 +210,7 @@ export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { run
     <section className="dataset-management-board">
       <div className="dataset-management-heading"><h2>我的数据</h2><span>{filtered.length}</span></div>
       <div className="dataset-management-table">
-        <div className="dataset-management-table-head"><span>数据集</span><span>Episodes</span><span>有效时长</span><span>总帧数</span><span>FPS / 相机</span><span>操作</span></div>
+        <div className="dataset-management-table-head"><span>数据集</span><span>采集来源</span><span>Episodes</span><span>有效时长</span><span>总帧数</span><span>FPS / 相机</span><span>操作</span></div>
         {filtered.map((dataset) => {
           const compatible = Boolean(dataset.robot_type) && dataset.robot_type === robotType;
           const activeReplay = replaying && activeReplayId === dataset.id;
@@ -185,6 +218,7 @@ export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { run
           const openDataset = () => { setDetail(null); setEpisode(null); setSelectedId(dataset.id); };
           return <div className="dataset-management-row" role="button" tabIndex={0} onClick={openDataset} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDataset(); } }} key={dataset.id}>
             <span><strong>{dataset.id}</strong><small>{dataset.tasks[0] || '未记录任务'} · {dataset.recorded_on || '日期未知'}</small></span>
+            <span><i className={`source-badge source-${dataset.provenance.control_source}`}>{sourceLabel(dataset.provenance.control_source)}</i><small>{provenanceDetail(dataset.provenance)}</small></span>
             <span>{countLabel(dataset.episodes)}</span>
             <span>{durationLabel(dataset.duration_s)}</span>
             <span>{countLabel(dataset.frames)}</span>
@@ -210,6 +244,7 @@ export function DatasetViewerPage({ runtimeEvent, robotType, statusSlot }: { run
           {detail && <>
             <section className="dataset-overview">
               <div><span>任务</span><p>{detail.tasks.join(' · ') || '未记录任务描述'}</p></div>
+              <div className="dataset-provenance"><span>采集来源</span><strong>{sourceLabel(detail.provenance.control_source)}</strong><p>{provenanceDetail(detail.provenance) || '没有可用的采集方式记录'}</p></div>
               <div className="dataset-overview-metrics">
                 <Metric label="Episodes" value={countLabel(detail.episodes.length)} />
                 <Metric label="总帧数" value={countLabel(detail.frames)} />
@@ -289,6 +324,7 @@ function EpisodePlayer({ episode }: { episode: EpisodePayload }) {
 
   return <div className="episode-player">
     {episode.tasks[0] && <div className="episode-task"><span>任务描述</span><strong>{episode.tasks.join(' · ')}</strong></div>}
+    <ControlTimeline controls={episode.controls} duration={episode.duration_s} />
     {playbackError && <div className="error compact">{playbackError}</div>}
     <div className="camera-grid">
       {episode.videos.map((video, index) => <figure key={video.key}><video ref={(element) => { videoRefs.current[index] = element; }} src={video.url} preload="metadata" playsInline onLoadedMetadata={(event) => { event.currentTarget.currentTime = video.from_timestamp; }} /><figcaption><strong>{video.label}</strong><span>{durationLabel(episode.duration_s)}</span></figcaption></figure>)}
@@ -303,6 +339,19 @@ function EpisodePlayer({ episode }: { episode: EpisodePayload }) {
     </div>
     <TrajectoryChart episode={episode} currentTime={currentTime} hidden={hidden} onHiddenChange={setHidden} onSeek={seek} />
   </div>;
+}
+
+function ControlTimeline({ controls, duration }: { controls: ControlBreakdown; duration: number }) {
+  const humanFrames = controls.intervention_frames + controls.demonstration_frames;
+  const knownFrames = controls.policy_frames + humanFrames;
+  const humanRatio = knownFrames ? humanFrames / knownFrames : 0;
+  return <section className="control-provenance">
+    <div className="control-provenance-heading"><div><span>控制来源</span><strong>{sourceLabel(controls.mode)}</strong></div><div className="control-counts"><span>Policy {countLabel(controls.policy_frames)} 帧</span><span>人工 {countLabel(humanFrames)} 帧</span>{knownFrames > 0 && <span>人工占比 {(humanRatio * 100).toFixed(1)}%</span>}</div></div>
+    <div className="control-timeline" aria-label="Policy 与人工控制阶段时间轴">
+      {controls.segments.map((segment, index) => <i className={`source-${segment.source}`} style={{ width: `${Math.max(0, segment.end_s - segment.start_s) / Math.max(duration, 0.001) * 100}%` }} title={`${sourceLabel(segment.source)} · ${durationLabel(segment.start_s)}–${durationLabel(segment.end_s)}`} key={`${segment.start_s}-${index}`} />)}
+    </div>
+    <div className="control-legend"><span><i className="source-policy" />Policy 推理</span><span><i className="source-human_intervention" />人工干预/示教</span>{controls.unknown_frames > 0 && <span><i className="source-unknown" />未标注</span>}</div>
+  </section>;
 }
 
 function TrajectoryChart({ episode, currentTime, hidden, onHiddenChange, onSeek }: { episode: EpisodePayload; currentTime: number; hidden: Set<number>; onHiddenChange: (value: Set<number>) => void; onSeek: (seconds: number) => void }) {

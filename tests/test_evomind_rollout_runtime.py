@@ -1,3 +1,5 @@
+import json
+
 from evomind_lerobot.device_config import (
     CameraBinding,
     CameraSlot,
@@ -14,6 +16,7 @@ from evomind_lerobot.runtime_service import (
     _policy_path,
     _robot_payload,
     _rollout_repo_id,
+    _write_dataset_provenance,
 )
 
 
@@ -162,3 +165,29 @@ def test_rollout_request_exposes_all_web_modes() -> None:
     ):
         request = RolloutStartRequest(policy_path="model", strategy=strategy, task="task")
         assert request.strategy == strategy
+
+
+def test_write_dataset_provenance_uses_lerobot_sidecar(tmp_path, monkeypatch) -> None:
+    from lerobot.utils import constants
+
+    monkeypatch.setattr(constants, "HF_LEROBOT_HOME", tmp_path)
+    metadata = tmp_path / "owner/example/meta"
+    metadata.mkdir(parents=True)
+    (metadata / "info.json").write_text("{}", encoding="utf-8")
+
+    _write_dataset_provenance(
+        "owner/example",
+        {
+            "collection_method": "policy",
+            "control_source": "policy",
+            "rollout_strategy": "episodic",
+        },
+    )
+
+    result = json.loads((metadata / "evomind.json").read_text(encoding="utf-8"))
+    assert result == {
+        "schema_version": 1,
+        "collection_method": "policy",
+        "control_source": "policy",
+        "rollout_strategy": "episodic",
+    }
