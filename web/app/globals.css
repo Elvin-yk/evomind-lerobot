@@ -384,14 +384,13 @@ code { font-family: var(--font-geist-mono), monospace; }
 .dataset-management-heading h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .dataset-management-heading span { display: inline-grid; min-width: 22px; height: 22px; place-items: center; border-radius: 999px; background: #ededed; color: #555; font-size: 11px; }
 .dataset-management-table { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
-.dataset-management-table-head, .dataset-management-row { display: grid; min-width: 1080px; grid-template-columns: minmax(220px, 2fr) 155px 80px 95px 95px 100px 190px; align-items: center; gap: 14px; padding: 0 16px; }
+.dataset-management-table-head, .dataset-management-row { display: grid; min-width: 940px; grid-template-columns: minmax(220px, 2fr) 90px 100px 100px 105px 190px; align-items: center; gap: 14px; padding: 0 16px; }
 .dataset-management-table-head { min-height: 38px; border-bottom: 1px solid var(--line); background: #fafafa; color: var(--subtle); font-size: 11px; }
 .dataset-management-row { position: relative; width: 100%; min-height: 68px; border-bottom: 1px solid var(--line); background: #fff; color: #555; text-align: left; font-size: 12px; cursor: pointer; }
 .dataset-management-row:last-of-type { border-bottom: 0; }
 .dataset-management-row:hover { background: #f6f6f6; }
 .dataset-management-row:focus-visible { outline: 2px solid #111; outline-offset: -2px; }
 .dataset-management-row > span:first-child { display: grid; min-width: 0; gap: 4px; }
-.dataset-management-row > span:nth-child(2) { display: grid; justify-items: start; gap: 5px; }
 .dataset-management-row strong, .dataset-management-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dataset-management-row strong { color: #111; font-size: 13px; }
 .dataset-management-row small { color: var(--subtle); font-size: 10px; }
@@ -413,13 +412,6 @@ code { font-family: var(--font-geist-mono), monospace; }
 .dataset-overview > div:first-child > span { color: var(--subtle); font-size: 11px; }
 .dataset-overview h2 { overflow-wrap: anywhere; margin: 5px 0; font-size: 20px; }
 .dataset-overview p { margin: 0; color: var(--muted); font-size: 12px; }
-.dataset-provenance { display: grid; justify-items: start; gap: 4px; border-left: 3px solid #2563eb; padding-left: 10px; }
-.dataset-provenance > span { color: var(--subtle); font-size: 10px; }
-.dataset-provenance > strong { font-size: 13px; }
-.source-badge { display: inline-flex; width: fit-content; align-items: center; border-radius: 999px; padding: 4px 8px; background: #eef2ff; color: #3730a3; font-size: 10px; font-style: normal; font-weight: 600; white-space: nowrap; }
-.source-badge.source-human_intervention, .source-badge.source-human_demonstration { background: #fff1f2; color: #be123c; }
-.source-badge.source-mixed { background: #fff7ed; color: #c2410c; }
-.source-badge.source-unknown { background: #f1f1f1; color: #666; }
 .dataset-overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .dataset-overview-metrics > div { display: grid; gap: 4px; border-right: 1px solid var(--line); padding: 0 13px; }
 .dataset-overview-metrics > div:first-child { padding-left: 0; }
@@ -435,21 +427,6 @@ code { font-family: var(--font-geist-mono), monospace; }
 .episode-task { display: grid; gap: 3px; }
 .episode-task span { color: var(--subtle); font-size: 10px; }
 .episode-task strong { font-size: 13px; line-height: 1.45; }
-.control-provenance { display: grid; gap: 9px; border: 1px solid var(--line); border-radius: 6px; padding: 12px; background: #fafafa; }
-.control-provenance-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
-.control-provenance-heading > div:first-child { display: grid; gap: 3px; }
-.control-provenance-heading > div:first-child span { color: var(--subtle); font-size: 10px; }
-.control-provenance-heading strong { font-size: 13px; }
-.control-counts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; color: #666; font-size: 10px; }
-.control-timeline { display: flex; width: 100%; height: 12px; overflow: hidden; border-radius: 999px; background: #ddd; }
-.control-timeline > i { display: block; min-width: 1px; height: 100%; }
-.control-timeline .source-policy, .control-legend .source-policy { background: #2563eb; }
-.control-timeline .source-human_intervention, .control-timeline .source-human_demonstration, .control-legend .source-human_intervention { background: #e11d48; }
-.control-timeline .source-mixed { background: #f97316; }
-.control-timeline .source-unknown, .control-legend .source-unknown { background: #aaa; }
-.control-legend { display: flex; flex-wrap: wrap; gap: 12px; color: #666; font-size: 10px; }
-.control-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.control-legend i { display: block; width: 9px; height: 9px; border-radius: 2px; }
 .camera-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .camera-grid figure { overflow: hidden; margin: 0; border: 1px solid var(--line); border-radius: 6px; background: #111; }
 .camera-grid video { display: block; width: 100%; aspect-ratio: 4 / 3; background: #111; object-fit: contain; }
@@ -578,9 +555,9 @@ code { font-family: var(--font-geist-mono), monospace; }
   .dataset-management-table-head { display: none; }
   .dataset-management-row { min-width: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 13px 0; }
   .dataset-management-row > span:first-child { grid-column: 1 / -1; }
-  .dataset-management-row > span:nth-child(3)::before { content: "Episodes "; color: var(--subtle); }
-  .dataset-management-row > span:nth-child(4)::before { content: "时长 "; color: var(--subtle); }
-  .dataset-management-row > span:nth-child(5), .dataset-management-row > span:nth-child(6) { display: none; }
+  .dataset-management-row > span:nth-child(2)::before { content: "Episodes "; color: var(--subtle); }
+  .dataset-management-row > span:nth-child(3)::before { content: "时长 "; color: var(--subtle); }
+  .dataset-management-row > span:nth-child(4), .dataset-management-row > span:nth-child(5) { display: none; }
   .dataset-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .dataset-drawer { width: 100vw; }
   .dataset-drawer-header { padding-inline: 16px; }

@@ -25,96 +25,6 @@ class DatasetUnavailableError(DatasetBrowserError):
     pass
 
 
-def _dataset_provenance(root: Path, features: dict[str, Any]) -> dict[str, Any]:
-    """Return explicit Evomind provenance, or a conservative legacy classification."""
-    path = root / "meta/evomind.json"
-    if path.is_file():
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(value, dict):
-                control_source = value.get("control_source", "unknown")
-                if control_source not in {
-                    "policy",
-                    "human_intervention",
-                    "human_demonstration",
-                    "mixed",
-                }:
-                    control_source = "unknown"
-                return {
-                    "collection_method": value.get("collection_method"),
-                    "control_source": control_source,
-                    "rollout_strategy": value.get("rollout_strategy"),
-                    "inference": value.get("inference"),
-                    "policy": value.get("policy"),
-                    "declared": True,
-                }
-        except (OSError, json.JSONDecodeError):
-            pass
-    if "intervention" in features:
-        return {
-            "collection_method": "policy",
-            "control_source": "mixed",
-            "rollout_strategy": "dagger",
-            "inference": None,
-            "policy": None,
-            "declared": False,
-        }
-    return {
-        "collection_method": None,
-        "control_source": "unknown",
-        "rollout_strategy": None,
-        "inference": None,
-        "policy": None,
-        "declared": False,
-    }
-
-
-def _control_breakdown(
-    frame_count: int,
-    fps: float,
-    provenance: dict[str, Any],
-    intervention: list[Any] | None,
-) -> dict[str, Any]:
-    """Summarize control ownership and contiguous policy/intervention phases."""
-    if frame_count <= 0:
-        sources = np.empty(0, dtype=object)
-    elif intervention is not None:
-        values = np.asarray(intervention, dtype=bool)
-        if values.size % frame_count == 0:
-            human_flags = values.reshape(frame_count, -1).any(axis=1)
-            sources = np.where(human_flags, "human_intervention", "policy")
-        else:
-            sources = np.full(frame_count, "unknown", dtype=object)
-    else:
-        source = str(provenance.get("control_source") or "unknown")
-        sources = np.full(frame_count, source, dtype=object)
-
-    counts = {
-        "policy_frames": int(np.count_nonzero(sources == "policy")),
-        "intervention_frames": int(np.count_nonzero(sources == "human_intervention")),
-        "demonstration_frames": int(np.count_nonzero(sources == "human_demonstration")),
-    }
-    counts["unknown_frames"] = frame_count - sum(counts.values())
-    present = [source for source in np.unique(sources).tolist() if source != "unknown"]
-    mode = present[0] if len(present) == 1 else "mixed" if len(present) > 1 else "unknown"
-
-    segments: list[dict[str, Any]] = []
-    if frame_count:
-        start = 0
-        for index in range(1, frame_count + 1):
-            if index == frame_count or sources[index] != sources[start]:
-                segments.append(
-                    {
-                        "source": str(sources[start]),
-                        "start_s": start / fps if fps else 0,
-                        "end_s": index / fps if fps else 0,
-                        "frames": index - start,
-                    }
-                )
-                start = index
-    return {"mode": mode, **counts, "segments": segments}
-
-
 def _dataset_roots() -> list[tuple[str, Path]]:
     root = HF_LEROBOT_HOME
     if not root.is_dir():
@@ -204,7 +114,6 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
             frames = int(info["total_frames"])
             episodes = int(info["total_episodes"])
             features = info.get("features", {})
-            provenance = _dataset_provenance(root, features)
             camera_keys = [
                 key for key, feature in features.items() if feature.get("dtype") in {"video", "image"}
             ]
@@ -236,7 +145,6 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
                     "recorded_on": datetime.fromtimestamp(info_path.stat().st_mtime).astimezone().date().isoformat(),
                     "camera_count": len(camera_keys),
                     "status": status,
-                    "provenance": provenance,
                     "available": status == "ready",
                     "error": error,
                 }
@@ -255,7 +163,6 @@ def datasets_catalog(active_dataset_id: str | None = None) -> list[dict[str, Any
                     "recorded_on": "",
                     "camera_count": 0,
                     "status": "unreadable",
-                    "provenance": _dataset_provenance(root, {}),
                     "available": False,
                     "error": str(error),
                 }
@@ -268,7 +175,6 @@ def dataset_detail(dataset_id: str, active_dataset_id: str | None = None) -> dic
         raise DatasetUnavailableError("数据集仍在采集中，结束后才能查看")
     root = _resolve_dataset(dataset_id)
     metadata = _metadata(dataset_id, root)
-    provenance = _dataset_provenance(root, metadata.features)
     episodes = []
     for index in range(metadata.total_episodes):
         row = _episode_row(metadata, index)
@@ -300,7 +206,6 @@ def dataset_detail(dataset_id: str, active_dataset_id: str | None = None) -> dic
         "tasks": _task_names(metadata),
         "cameras": cameras,
         "episodes": episodes,
-        "provenance": provenance,
     }
 
 
@@ -345,13 +250,6 @@ def dataset_episode(
     action = _to_matrix(frame_data[ACTION] if ACTION in available_columns else [], len(timestamps))
     state = _to_matrix(frame_data[OBS_STATE] if OBS_STATE in available_columns else [], len(timestamps))
     indices = _sample_indices(len(timestamps), max_points)
-    provenance = _dataset_provenance(root, metadata.features)
-    controls = _control_breakdown(
-        len(timestamps),
-        metadata.fps,
-        provenance,
-        frame_data["intervention"] if "intervention" in available_columns else None,
-    )
 
     action_names = _feature_names(metadata.features.get(ACTION, {}), action.shape[1], "action")
     state_names = _feature_names(metadata.features.get(OBS_STATE, {}), state.shape[1], "state")
@@ -402,8 +300,6 @@ def dataset_episode(
         "timestamps": timestamps[indices].tolist(),
         "series": series,
         "videos": videos,
-        "provenance": provenance,
-        "controls": controls,
     }
 
 

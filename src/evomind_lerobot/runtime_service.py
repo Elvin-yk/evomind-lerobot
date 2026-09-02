@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import multiprocessing
 import os
@@ -184,24 +183,6 @@ def _recording_dataset_name(task: dict[str, Any]) -> str:
     name = re.sub(r"[^\w.-]+", "-", str(task["name"]).strip(), flags=re.UNICODE).strip("-._")
     task_prefix = str(task["id"]).split("-", 1)[0]
     return f"{name[:48] or 'recording'}_{task_prefix}"
-
-
-def _write_dataset_provenance(repo_id: str, provenance: dict[str, Any]) -> None:
-    """Persist Evomind collection metadata alongside a completed LeRobot dataset."""
-    from lerobot.utils.constants import HF_LEROBOT_HOME
-
-    root = (HF_LEROBOT_HOME / repo_id).resolve()
-    if not root.is_relative_to(HF_LEROBOT_HOME.resolve()) or not (root / "meta/info.json").is_file():
-        logging.warning("Could not attach collection provenance to missing dataset %s", repo_id)
-        return
-    path = root / "meta/evomind.json"
-    temporary = path.with_suffix(".json.tmp")
-    payload = {"schema_version": 1, **provenance}
-    try:
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
-    except OSError:
-        logging.exception("Could not attach collection provenance to dataset %s", repo_id)
 
 
 def _camera_config(binding: CameraBinding, fps: int) -> dict[str, Any]:
@@ -456,37 +437,26 @@ def _execute_recording(payload: dict[str, Any]) -> None:
     robot, teleop = _decode_hardware(_configuration(), request.fps)
     if teleop is None:
         raise ValueError("当前设备没有遥操作设备")
-    dataset = DatasetRecordConfig(
-        repo_id=_repo_id(dataset_name),
-        single_task=task_description,
-        fps=request.fps,
-        num_episodes=request.num_episodes,
-        episode_time_s=request.episode_time_s,
-        reset_time_s=request.reset_time_s,
-        push_to_hub=False,
-        streaming_encoding=True,
-        encoder_threads=2,
-        encoder_queue_maxsize=30,
-        rgb_encoder=RGBEncoderConfig(vcodec="h264"),
-    )
     record(
         RecordConfig(
             robot=robot,
             teleop=teleop,
-            dataset=dataset,
+            dataset=DatasetRecordConfig(
+                repo_id=_repo_id(dataset_name),
+                single_task=task_description,
+                fps=request.fps,
+                num_episodes=request.num_episodes,
+                episode_time_s=request.episode_time_s,
+                reset_time_s=request.reset_time_s,
+                push_to_hub=False,
+                streaming_encoding=True,
+                encoder_threads=2,
+                encoder_queue_maxsize=30,
+                rgb_encoder=RGBEncoderConfig(vcodec="h264"),
+            ),
             display_data=False,
             play_sounds=False,
         )
-    )
-    _write_dataset_provenance(
-        dataset.repo_id,
-        {
-            "collection_method": "manual",
-            "control_source": "human_demonstration",
-            "rollout_strategy": None,
-            "inference": None,
-            "policy": None,
-        },
     )
 
 
@@ -638,26 +608,6 @@ def _execute_rollout(payload: dict[str, Any]) -> None:
             play_sounds=False,
         )
     )
-    if dataset is not None:
-        _write_dataset_provenance(
-            dataset.repo_id,
-            {
-                "collection_method": "policy",
-                "control_source": (
-                    "human_intervention"
-                    if request.strategy == "dagger_corrections"
-                    else "mixed"
-                    if request.strategy == "dagger_continuous"
-                    else "policy"
-                ),
-                "rollout_strategy": request.strategy,
-                "inference": request.inference,
-                "policy": {
-                    "path": policy_path,
-                    "type": policy.type,
-                },
-            },
-        )
 
 
 def _dataset(dataset_id: str) -> dict[str, Any]:
