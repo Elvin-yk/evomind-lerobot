@@ -100,6 +100,25 @@ def test_inference_config_types():
     assert rtc.rtc is not None
 
 
+def test_rtc_reset_invalidates_cached_observation():
+    from threading import Lock
+
+    from lerobot.rollout.inference import RTCInferenceEngine
+
+    engine = object.__new__(RTCInferenceEngine)
+    engine._policy = MagicMock()
+    engine._preprocessor = MagicMock()
+    engine._postprocessor = MagicMock()
+    engine._action_queue = MagicMock()
+    engine._obs_lock = Lock()
+    engine._obs_holder = {"obs": {"state": torch.tensor([1.0])}, "robot_type": "mock"}
+
+    engine.reset()
+
+    assert engine._obs_holder["obs"] is None
+    engine._action_queue.clear.assert_called_once_with()
+
+
 def test_sentry_config_defaults():
     from lerobot.rollout import SentryStrategyConfig
 

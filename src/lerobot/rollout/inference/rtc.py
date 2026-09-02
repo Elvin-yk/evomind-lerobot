@@ -235,13 +235,15 @@ class RTCInferenceEngine(InferenceEngine):
         self._policy_active.set()
 
     def reset(self) -> None:
-        """Reset the policy, processors, and action queue."""
-        logger.info("Resetting RTC inference state (policy + processors + queue)")
+        """Reset the policy, processors, action queue, and cached observation."""
+        logger.info("Resetting RTC inference state (policy + processors + queue + observation)")
         self._policy.reset()
         self._preprocessor.reset()
         self._postprocessor.reset()
         if self._action_queue is not None:
             self._action_queue.clear()
+        with self._obs_lock:
+            self._obs_holder["obs"] = None
 
     # ------------------------------------------------------------------
     # Action production (called from main thread)
