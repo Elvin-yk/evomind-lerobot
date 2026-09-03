@@ -308,8 +308,7 @@ code { font-family: var(--font-geist-mono), monospace; }
 .compact-workflow .workflow-section h3 { margin-bottom: 12px; }
 .compact-workflow .workflow-actions { display: block; padding-top: 14px; }
 .compact-workflow .workflow-command-buttons { display: grid; grid-template-columns: minmax(0, 1fr); }
-.compact-workflow .workflow-command-buttons.episode-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.compact-workflow .workflow-command-buttons.resetting-controls { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.compact-workflow .workflow-command-buttons.episode-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .compact-workflow .workflow-command-buttons button { width: 100%; min-height: 46px; }
 .recording-workflow .workflow-section textarea { min-height: 64px; }
 .selected-task-description { display: grid; grid-column: 1 / -1; gap: 4px; border-left: 2px solid #111; background: #f3f3f3; padding: 11px 13px; }

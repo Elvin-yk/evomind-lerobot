@@ -43,6 +43,9 @@ def test_episodic_dagger_saves_each_complete_round(monkeypatch) -> None:
     from lerobot.rollout import EpisodicDAggerStrategy, EpisodicDAggerStrategyConfig
 
     ctx = _context(num_episodes=2)
+    # Episodic DAgger is bounded by episode count and per-episode time, not by
+    # the legacy rollout-wide duration field.
+    ctx.runtime.cfg.duration = 1e-9
     strategy = EpisodicDAggerStrategy(EpisodicDAggerStrategyConfig(num_episodes=2))
     strategy._engine = MagicMock()
     strategy._interpolator = MagicMock()

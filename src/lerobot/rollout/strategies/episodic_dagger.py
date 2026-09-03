@@ -59,8 +59,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
             raise RuntimeError("Episodic DAgger dataset was not initialized")
 
         recorded_episodes = 0
-        session_started = time.perf_counter()
-        session_deadline = session_started + cfg.duration if cfg.duration > 0 else None
 
         with VideoEncodingManager(dataset):
             try:
@@ -68,22 +66,18 @@ class EpisodicDAggerStrategy(DAggerStrategy):
                     recorded_episodes < dataset_cfg.num_episodes
                     and not self._events.stop_recording.is_set()
                     and not ctx.runtime.shutdown_event.is_set()
-                    and not self._deadline_reached(session_deadline)
                 ):
                     outcome, last_action = self._run_episode(
                         ctx,
                         episode=recorded_episodes + 1,
                         total_episodes=dataset_cfg.num_episodes,
                         duration_s=dataset_cfg.episode_time_s,
-                        session_deadline=session_deadline,
                     )
 
                     if outcome == "stopped":
                         break
 
-                    should_reset = (
-                        outcome == "rerecord" or recorded_episodes < dataset_cfg.num_episodes - 1
-                    ) and not self._deadline_reached(session_deadline)
+                    should_reset = outcome == "rerecord" or recorded_episodes < dataset_cfg.num_episodes - 1
 
                     if should_reset:
                         self._prepare_teleop_reset(ctx, last_action)
@@ -91,7 +85,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
                         self._run_reset(
                             ctx,
                             duration_s=dataset_cfg.reset_time_s,
-                            session_deadline=session_deadline,
                         )
 
                     if outcome == "rerecord":
@@ -103,8 +96,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
                         self._needs_push.set()
                         recorded_episodes += 1
 
-                    if self._deadline_reached(session_deadline):
-                        break
             finally:
                 self._engine.pause()
                 # Preserve a partial episode when the process is interrupted.
@@ -120,7 +111,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
         episode: int,
         total_episodes: int,
         duration_s: float,
-        session_deadline: float | None,
     ) -> tuple[str, dict[str, Any] | None]:
         engine = self._engine
         interpolator = self._interpolator
@@ -149,7 +139,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
             time.perf_counter() - episode_started < duration_s
             and not self._events.stop_recording.is_set()
             and not ctx.runtime.shutdown_event.is_set()
-            and not self._deadline_reached(session_deadline)
         ):
             loop_started = time.perf_counter()
             commands = take_runtime_commands()
@@ -268,7 +257,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
         ctx: RolloutContext,
         *,
         duration_s: float,
-        session_deadline: float | None,
     ) -> None:
         """Let the operator reset the scene without writing dataset frames."""
         robot = ctx.hardware.robot_wrapper
@@ -279,7 +267,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
         while (
             time.perf_counter() - started < duration_s
             and not ctx.runtime.shutdown_event.is_set()
-            and not self._deadline_reached(session_deadline)
         ):
             loop_started = time.perf_counter()
             commands = take_runtime_commands()
@@ -317,10 +304,6 @@ class EpisodicDAggerStrategy(DAggerStrategy):
             records_data=False,
             record_autonomous=True,
         )
-
-    @staticmethod
-    def _deadline_reached(deadline: float | None) -> bool:
-        return deadline is not None and time.perf_counter() >= deadline
 
     @staticmethod
     def _episode_has_frames(dataset) -> bool:
