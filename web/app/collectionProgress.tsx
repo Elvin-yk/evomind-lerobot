@@ -15,7 +15,7 @@ type CollectionTask = {
   rollout_strategy: PolicyStrategy; inference: 'sync' | 'rtc';
   duration_s: number; ring_buffer_seconds: number;
 };
-type PolicyStrategy = 'episodic' | 'sentry' | 'highlight' | 'dagger_corrections' | 'dagger_continuous';
+type PolicyStrategy = 'episodic' | 'sentry' | 'highlight' | 'dagger_corrections' | 'dagger_continuous' | 'episodic_dagger';
 type LocalPolicy = { id: string; path: string; type: string };
 type TrendItem = { date: string; target_duration_s: number; actual_duration_s: number; episode_count: number };
 type ActiveSession = {
@@ -46,6 +46,7 @@ const policyStrategies: Record<PolicyStrategy, { label: string; detail: string }
   highlight: { label: 'Highlight', detail: '用环形缓存保存选中的前后片段' },
   dagger_corrections: { label: 'DAgger 纠正', detail: '只保存人工接管纠正片段' },
   dagger_continuous: { label: 'DAgger 连续', detail: '保存自主和人工帧并标记 intervention' },
+  episodic_dagger: { label: 'Episodic DAgger', detail: '按 Episode 保存完整轨迹，轮内可切换 Policy 与人工干预' },
 };
 
 function shanghaiDate() {
@@ -152,7 +153,7 @@ export function CollectionProgressPage({ runtimeEvent, policies }: { runtimeEven
   const [fps, setFps] = useState(30);
   const [collectionMethod, setCollectionMethod] = useState<'manual' | 'policy'>('manual');
   const [policyPath, setPolicyPath] = useState(policies[0]?.path ?? '');
-  const [strategy, setStrategy] = useState<PolicyStrategy>('episodic');
+  const [strategy, setStrategy] = useState<PolicyStrategy>('episodic_dagger');
   const [inference, setInference] = useState<'sync' | 'rtc'>('sync');
   const [duration, setDuration] = useState(120);
   const [ringBufferSeconds, setRingBufferSeconds] = useState(10);
@@ -185,7 +186,7 @@ export function CollectionProgressPage({ runtimeEvent, policies }: { runtimeEven
     setEditingId(null); setName(''); setDescription(''); setTargetMinutes(60);
     setNumEpisodes(20); setEpisodeTime(30); setResetTime(10); setFps(30);
     setCollectionMethod('manual'); setPolicyPath(policies[0]?.path ?? '');
-    setStrategy('episodic'); setInference('sync'); setDuration(120); setRingBufferSeconds(10);
+    setStrategy('episodic_dagger'); setInference('sync'); setDuration(120); setRingBufferSeconds(10);
   };
 
   async function saveTask() {
@@ -220,7 +221,7 @@ export function CollectionProgressPage({ runtimeEvent, policies }: { runtimeEven
     setResetTime(task.reset_time_s); setFps(task.fps);
     setCollectionMethod(task.collection_method);
     setPolicyPath(policies.some((policy) => policy.path === task.policy_path) ? task.policy_path : '');
-    setStrategy(task.rollout_strategy); setInference(task.inference);
+    setStrategy('episodic_dagger'); setInference(task.inference);
     setDuration(task.duration_s); setRingBufferSeconds(task.ring_buffer_seconds);
   }
 
@@ -274,7 +275,7 @@ export function CollectionProgressPage({ runtimeEvent, policies }: { runtimeEven
     </section></>}
 
     {view === 'tasks' && <>{progress.active_session && <section className="active-collection-card">
-      <div><span>{progress.active_session.collection_method === 'policy' ? 'Policy 采集' : '人工采集'}</span><strong>{progress.active_session.task_name}</strong><small>{progress.active_session.collection_method === 'policy' ? `${policyStrategies[progress.active_session.rollout_strategy ?? 'episodic'].label} · ${activePolicy?.id ?? '本地 Policy'}` : progress.active_session.repo_id || progress.active_session.dataset_name}</small></div>
+      <div><span>{progress.active_session.collection_method === 'policy' ? 'Policy 采集' : '人工采集'}</span><strong>{progress.active_session.task_name}</strong><small>{progress.active_session.collection_method === 'policy' ? `${policyStrategies[progress.active_session.rollout_strategy ?? 'episodic_dagger'].label} · ${activePolicy?.id ?? '本地 Policy'}` : progress.active_session.repo_id || progress.active_session.dataset_name}</small></div>
       <div><span>当前阶段</span><strong>{event?.message || '正在启动数据采集'}</strong><small>{stage || 'starting'}{currentEpisode !== undefined ? ` · Episode ${String(currentEpisode)}` : ''}</small></div>
       <div><span>本次已保存</span><strong>{durationLabel(progress.active_session.saved_duration_s)}</strong><small>{progress.active_session.saved_episodes} Episodes</small></div>
     </section>}
@@ -301,10 +302,10 @@ export function CollectionProgressPage({ runtimeEvent, policies }: { runtimeEven
         <label className="full-field">任务描述<textarea value={description} onChange={(item) => setDescription(item.target.value)} disabled={editingBlocked} placeholder="写入 LeRobot 数据集的完整任务描述" /></label>
         <label className="full-field">采集方式<select value={collectionMethod} onChange={(item) => setCollectionMethod(item.target.value as 'manual' | 'policy')} disabled={editingBlocked || Boolean(editingTask?.locked)}><option value="manual">人工采集</option><option value="policy">Policy 采集</option></select>{editingTask?.locked && <small>已有采集记录后，采集方式保持不变</small>}</label>
         <div className="full-field task-settings-label">采集设置</div>
-        {collectionMethod === 'policy' && <><label className="full-field">本地 Policy<select value={policyPath} onChange={(item) => setPolicyPath(item.target.value)} disabled={editingBlocked}>{policies.length === 0 && <option value="">本机未发现模型</option>}{policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id} · {policy.type}</option>)}</select></label><label>采集策略<select value={strategy} onChange={(item) => setStrategy(item.target.value as PolicyStrategy)} disabled={editingBlocked}>{(Object.entries(policyStrategies) as Array<[PolicyStrategy, { label: string; detail: string }]>).map(([value, config]) => <option value={value} key={value}>{config.label}</option>)}</select></label><label>推理后端<select value={inference} onChange={(item) => setInference(item.target.value as 'sync' | 'rtc')} disabled={editingBlocked}><option value="sync">同步推理</option><option value="rtc">RTC 实时分块</option></select></label><div className="selected-task-description full-field"><span>{policyStrategies[strategy].label}</span><strong>{policyStrategies[strategy].detail}</strong></div><label>最大运行时间（秒）<TaskNumberInput value={duration} onCommit={setDuration} min={1} max={86_400} disabled={editingBlocked} /></label></>}
-        {(collectionMethod === 'manual' || strategy === 'episodic' || strategy === 'dagger_corrections') && <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={editingBlocked} /></label>}
-        {(collectionMethod === 'manual' || strategy === 'episodic') && <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={editingBlocked} /></label>}
-        {(collectionMethod === 'manual' || strategy === 'episodic') && <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={editingBlocked} /></label>}
+        {collectionMethod === 'policy' && <><label className="full-field">本地 Policy<select value={policyPath} onChange={(item) => setPolicyPath(item.target.value)} disabled={editingBlocked}>{policies.length === 0 && <option value="">本机未发现模型</option>}{policies.map((policy) => <option value={policy.path} key={policy.path}>{policy.id} · {policy.type}</option>)}</select></label><label>采集策略<input value={policyStrategies[strategy].label} readOnly /></label><label>推理后端<select value={inference} onChange={(item) => setInference(item.target.value as 'sync' | 'rtc')} disabled={editingBlocked}><option value="sync">同步推理</option><option value="rtc">RTC 实时分块</option></select></label><div className="selected-task-description full-field"><span>{policyStrategies[strategy].label}</span><strong>{policyStrategies[strategy].detail}</strong></div><label>最大运行时间（秒）<TaskNumberInput value={duration} onCommit={setDuration} min={1} max={86_400} disabled={editingBlocked} /></label></>}
+        {(collectionMethod === 'manual' || strategy === 'episodic' || strategy === 'dagger_corrections' || strategy === 'episodic_dagger') && <label>采集轮数<TaskNumberInput value={numEpisodes} onCommit={setNumEpisodes} min={1} max={10_000} disabled={editingBlocked} /></label>}
+        {(collectionMethod === 'manual' || strategy === 'episodic' || strategy === 'episodic_dagger') && <label>单轮时长（秒）<TaskNumberInput value={episodeTime} onCommit={setEpisodeTime} min={1} max={86_400} disabled={editingBlocked} /></label>}
+        {(collectionMethod === 'manual' || strategy === 'episodic' || strategy === 'episodic_dagger') && <label>重置时间（秒）<TaskNumberInput value={resetTime} onCommit={setResetTime} min={0} max={86_400} disabled={editingBlocked} /></label>}
         <label>帧率<select value={fps} onChange={(item) => setFps(Number(item.target.value))} disabled={editingBlocked}><option value="30">30 FPS</option><option value="20">20 FPS</option></select></label>
         {collectionMethod === 'policy' && strategy === 'highlight' && <label>环形缓存（秒）<TaskNumberInput value={ringBufferSeconds} onCommit={setRingBufferSeconds} min={1} max={300} disabled={editingBlocked} /></label>}
       </div>

@@ -22,6 +22,7 @@ from .base import BaseStrategy
 from .core import RolloutStrategy
 from .dagger import DAggerStrategy
 from .episodic import EpisodicStrategy
+from .episodic_dagger import EpisodicDAggerStrategy
 from .highlight import HighlightStrategy
 from .sentry import SentryStrategy
 
@@ -45,6 +46,9 @@ def create_strategy(config: RolloutStrategyConfig) -> RolloutStrategy:
         return DAggerStrategy(config)
     if config.type == "episodic":
         return EpisodicStrategy(config)
+    if config.type == "episodic_dagger":
+        return EpisodicDAggerStrategy(config)
     raise ValueError(
-        f"Unknown strategy type '{config.type}'. Available: base, sentry, highlight, dagger, episodic"
+        f"Unknown strategy type '{config.type}'. "
+        "Available: base, sentry, highlight, dagger, episodic, episodic_dagger"
     )

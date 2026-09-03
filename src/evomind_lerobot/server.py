@@ -114,8 +114,13 @@ class CollectionTaskCreateRequest(BaseModel):
     collection_method: Literal["manual", "policy"] = "manual"
     policy_path: str = ""
     rollout_strategy: Literal[
-        "episodic", "sentry", "highlight", "dagger_corrections", "dagger_continuous"
-    ] = "episodic"
+        "episodic",
+        "sentry",
+        "highlight",
+        "dagger_corrections",
+        "dagger_continuous",
+        "episodic_dagger",
+    ] = "episodic_dagger"
     inference: Literal["sync", "rtc"] = "sync"
     duration_s: int = Field(default=120, ge=1, le=86_400)
     ring_buffer_seconds: int = Field(default=10, ge=1, le=300)
@@ -140,8 +145,13 @@ class CollectionTaskUpdateRequest(BaseModel):
     collection_method: Literal["manual", "policy"] = "manual"
     policy_path: str = ""
     rollout_strategy: Literal[
-        "episodic", "sentry", "highlight", "dagger_corrections", "dagger_continuous"
-    ] = "episodic"
+        "episodic",
+        "sentry",
+        "highlight",
+        "dagger_corrections",
+        "dagger_continuous",
+        "episodic_dagger",
+    ] = "episodic_dagger"
     inference: Literal["sync", "rtc"] = "sync"
     duration_s: int = Field(default=120, ge=1, le=86_400)
     ring_buffer_seconds: int = Field(default=10, ge=1, le=300)

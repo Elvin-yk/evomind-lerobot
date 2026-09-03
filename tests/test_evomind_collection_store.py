@@ -42,7 +42,7 @@ def test_legacy_tasks_migrate_to_manual_collection(tmp_path) -> None:
 
     assert task["collection_method"] == "manual"
     assert task["policy_path"] == ""
-    assert task["rollout_strategy"] == "episodic"
+    assert task["rollout_strategy"] == "episodic_dagger"
     assert task["session_count"] == 0
 
 
@@ -106,7 +106,7 @@ def test_policy_collection_builds_rollout_from_task(tmp_path, monkeypatch) -> No
     store = CollectionStore(tmp_path / "state.sqlite3")
     task = store.create_task(
         work_date=local_today(),
-        name="DAgger",
+        name="Episodic DAgger",
         description="insert screw",
         target_duration_s=60,
         num_episodes=3,
@@ -115,7 +115,7 @@ def test_policy_collection_builds_rollout_from_task(tmp_path, monkeypatch) -> No
         fps=30,
         collection_method="policy",
         policy_path="/models/pi05",
-        rollout_strategy="dagger_continuous",
+        rollout_strategy="episodic_dagger",
         inference="rtc",
         duration_s=90,
         ring_buffer_seconds=12,
@@ -144,10 +144,10 @@ def test_policy_collection_builds_rollout_from_task(tmp_path, monkeypatch) -> No
     assert result == {"running": True}
     assert captured["operation"] is Operation.ROLLOUT
     assert isinstance(captured["request"], RolloutStartRequest)
-    assert captured["request"].strategy == "dagger_continuous"
+    assert captured["request"].strategy == "episodic_dagger"
     assert captured["request"].inference == "rtc"
     assert captured["request"].policy_path == "/models/pi05"
-    assert captured["request"].dataset_name.startswith("DAgger_")
+    assert captured["request"].dataset_name.startswith("Episodic-DAgger_")
 
 
 def test_policy_collection_rejects_missing_local_model(tmp_path, monkeypatch) -> None:

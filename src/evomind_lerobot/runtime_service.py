@@ -64,6 +64,7 @@ class RolloutStartRequest(BaseModel):
         "highlight",
         "dagger_corrections",
         "dagger_continuous",
+        "episodic_dagger",
     ] = "base"
     inference: Literal["sync", "rtc"] = "sync"
     task: str = Field(min_length=1, max_length=500)
@@ -557,6 +558,7 @@ def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = 
     from lerobot.rollout.configs import (
         BaseStrategyConfig,
         DAggerStrategyConfig,
+        EpisodicDAggerStrategyConfig,
         EpisodicStrategyConfig,
         HighlightStrategyConfig,
         RolloutConfig,
@@ -570,7 +572,12 @@ def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = 
     if not inspection["compatible"]:
         raise ValueError("Policy 与当前设备不兼容：" + "；".join(inspection["issues"]))
 
-    needs_teleop = request.strategy in {"episodic", "dagger_corrections", "dagger_continuous"}
+    needs_teleop = request.strategy in {
+        "episodic",
+        "dagger_corrections",
+        "dagger_continuous",
+        "episodic_dagger",
+    }
     robot, teleop = _decode_hardware(
         configuration,
         request.fps,
@@ -608,6 +615,9 @@ def _execute_rollout(payload: dict[str, Any], *, preloaded_policy: Any | None = 
         "dagger_continuous": DAggerStrategyConfig(
             num_episodes=request.num_episodes,
             record_autonomous=True,
+        ),
+        "episodic_dagger": EpisodicDAggerStrategyConfig(
+            num_episodes=request.num_episodes,
         ),
     }[request.strategy]
     inference = _rollout_inference_config(request.inference, policy)

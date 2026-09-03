@@ -213,6 +213,7 @@ def test_rollout_request_exposes_all_web_modes() -> None:
         "highlight",
         "dagger_corrections",
         "dagger_continuous",
+        "episodic_dagger",
     ):
         request = RolloutStartRequest(policy_path="model", strategy=strategy, task="task")
         assert request.strategy == strategy

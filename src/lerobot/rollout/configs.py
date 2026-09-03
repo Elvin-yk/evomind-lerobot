@@ -206,6 +206,20 @@ class DAggerStrategyConfig(RolloutStrategyConfig):
             raise ValueError(f"DAgger input_device must be 'keyboard' or 'pedal', got '{self.input_device}'")
 
 
+@RolloutStrategyConfig.register_subclass("episodic_dagger")
+@dataclass
+class EpisodicDAggerStrategyConfig(DAggerStrategyConfig):
+    """Episode-oriented DAgger recording with manual reset phases.
+
+    Each episode records both autonomous policy frames and human intervention
+    frames.  Intervention frames are tagged with ``intervention=True``.  The
+    operator may end or discard a round explicitly, and an unrecorded teleop
+    reset phase runs between rounds.
+    """
+
+    record_autonomous: bool = field(default=True, init=False)
+
+
 # ---------------------------------------------------------------------------
 # Top-level rollout config
 # ---------------------------------------------------------------------------
